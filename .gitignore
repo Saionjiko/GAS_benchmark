@@ -1,0 +1,42 @@
+# R / RStudio / Quarto
+.Rhistory
+.RData
+.Rproj.user/
+*.Rproj
+*_files/
+*.html
+*.log
+
+# ArchR / scATAC file
+GAS_benchmark/*.arrow
+GAS_benchmark/ArchRLogs/
+GAS_benchmark/tmp/
+GAS_benchmark/logs/
+
+GAS_benchmark/data/raw/
+GAS_benchmark/data/processed/
+GAS_benchmark/data/intermediate/
+
+GAS_benchmark/results/
+GAS_benchmark/figures/
+
+# GAS_benchmark_DNA_methylation）
+GAS_benchmark_DNA_methylation/env/
+GAS_benchmark_DNA_methylation/logs/
+GAS_benchmark_DNA_methylation/results/
+
+*.allc.tsv.gz
+*.mc.tsv.gz
+*.cov.gz
+*.bw
+*.bigWig
+*.h5
+*.rds
+*.mtx
+*.tsv.gz
+*.bed
+*.bam
+*.bai
+
+.DS_Store
+Thumbs.db
