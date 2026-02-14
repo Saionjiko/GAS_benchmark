@@ -15,6 +15,7 @@ make_meth_model <- function(
     region = c("promoter", "genebody"),
     width_bp = NULL,                 # total promoter width centered at TSS
     gb_up_bp = NULL, gb_down_bp = NULL,
+    max_dist_bp = NULL,
     weight = c("constant", "exp"),
     decay_bp = NULL,                 
     direction = c("activity_1m","methylation_raw"),
@@ -39,6 +40,7 @@ make_meth_model <- function(
     width_bp = width_bp,
     gb_up_bp = gb_up_bp,
     gb_down_bp = gb_down_bp,
+    max_dist_bp = max_dist_bp,
     weight = weight,
     decay_bp = decay_bp,
     boundary = boundary,
@@ -52,7 +54,9 @@ make_meth_model <- function(
 build_meth_family <- function() {
   models <- list()
   
+  # ==========================================================================================
   # Promoter constant windows (aligns with ATAC promoter family)
+  # ==========================================================================================
   for (kb in c(1,2,5,10,25,50,100)) {
     nm <- paste0("Meth-Promoter-", kb, "kb-Const-Dir1m-MissImpute1")
     models[[nm]] <- make_meth_model(
@@ -68,7 +72,6 @@ build_meth_family <- function() {
   # ==========================================================================================
   # TSS exponential (aligns with Custom Gene Models From TSS) — add both boundary variants
   # ==========================================================================================
-  # NOTE: aggregation is performed directly on CpG-level beta values
   decay_list <- c(5000L, 10000L, 25000L, 100000L)
   
   for (L in decay_list) {
@@ -89,8 +92,7 @@ build_meth_family <- function() {
         ". No gene-boundary assignment; CpGs may contribute to multiple genes if windows overlap."
       )
     )
-    
-    # ---- GeneBoundary ----
+    # ---- WithGeneBoundary ----
     nm1 <- paste0("Meth-TSSExponentialGeneBoundary-ExpL", L/1000, "k-Dir1m-MissImpute1")
     models[[nm1]] <- make_meth_model(
       name = nm1,
@@ -108,8 +110,9 @@ build_meth_family <- function() {
     )
   }
   
-  
+  # ==========================================================================================
   # GeneBody extended constant windows (aligns with ATAC GeneBodyExtended)
+  # ==========================================================================================
   gb_sets <- list(
     c(0,0), c(1000,0), c(2000,0), c(5000,0),
     c(1000,1000), c(2000,2000), c(5000,5000),
@@ -186,9 +189,9 @@ build_meth_family <- function() {
       
       nm <- paste0(
         "Meth-GeneBodyExtendedExponentialGeneBoundary-",
-        tag, "-", idx,
-        "-ExpL", L/1000, "k-DirRaw-MissImpute1"
+        tag, "-ExpL", L/1000, "k-DirRaw-MissImpute1"
       )
+      
       
       
       models[[nm]] <- make_meth_model(
@@ -196,6 +199,7 @@ build_meth_family <- function() {
         region = "genebody",
         gb_up_bp = up,
         gb_down_bp = down,
+        max_dist_bp = 100000L,
         weight = "exp",
         decay_bp = L,
         boundary = TRUE,                 # GeneBoundary
