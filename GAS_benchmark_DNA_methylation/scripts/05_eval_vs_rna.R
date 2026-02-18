@@ -1,18 +1,3 @@
-# ============================================================
-# Step 3 — Validate against paired scRNA-seq expression (ArchR-style 4 tests)
-#   - snmC2T chr1 example
-#
-# Key fixes in this version:
-#   (1) RNA gene ID normalization + collapsing duplicates happens BEFORE normalization:
-#         rna_counts <- read_rna_counts(...)
-#         rna_counts <- collapse_duplicate_genes_counts(rna_counts)   # MUST before normalize
-#         rna_log    <- normalize_log_cp10k(rna_counts)
-#   (2) Replace test_across_genes / test_across_groups with robust versions:
-#         - prefilter genes requiring sd>0 across groups (both GAS_pb and RNA_pb)
-#         - avoid cor() NA by requiring sd>0 on ok points
-#   (3) Per-model checkpoint + atomic writes retained
-# ============================================================
-
 PROJECT_ROOT <- normalizePath("~/projects/GAS_benchmark_DNA_methylation", mustWork = FALSE)
 source(file.path(PROJECT_ROOT, "config", "paths.R"))
 source(file.path(PROJECT_ROOT, "scripts", "00_setup.R"))
@@ -24,6 +9,7 @@ suppressPackageStartupMessages({
   library(data.table)
   library(tibble)
   library(pheatmap)
+  library(future.apply)
 })
 
 # -----------------------------
@@ -46,15 +32,14 @@ HVG_N <- 2000L
 summary_fun <- median
 
 # Meth label granularity
-METH_LABEL_LEVEL <- "cell_type"  # ("cell_type" recommended)
+METH_LABEL_LEVEL <- "cell_type" 
 
-# ---- NEW eval params (to induce interpretable family-level trend) ----
-EVAL_CP10K_LOG1P <- TRUE         # ArchR-style scaling
-CLIP_NEGATIVE_COR <- TRUE        # ArchR-style: cor<0 -> 0
-MIN_GENE_OK_FRAC <- 0.80         # coverage gate across groups
-MIN_GROUPS_OK_IN_ROW <- 10       # across-genes per-row minimum ok genes (safety)
+EVAL_CP10K_LOG1P <- TRUE        
+CLIP_NEGATIVE_COR <- TRUE        
+MIN_GENE_OK_FRAC <- 0.80         
+MIN_GROUPS_OK_IN_ROW <- 10      
 
-
+plan(multisession, workers = 8)
 # -----------------------------
 # Paths
 # -----------------------------
@@ -65,23 +50,50 @@ RNA_CELLTYPE_LABEL_PATH <- file.path(out_dir, "rna_celltype_labels.csv")
 RNA_CLUSTER_LABEL_PATH  <- file.path(out_dir, "rna_cluster_labels.csv")
 SEURAT_RDS_PATH         <- file.path(out_dir, "rna_seurat_obj.rds")  # optional
 
-# Meth annotation path
 METH_ANNOT_RDS_PATH <- "/storage2/Data/Luo2022/annotation.rds"
 
-# RNA counts path
 rna_dir <- "/storage2/ruh81/GAS_benchmark/rna/raw/GSE140493_snmC2T"
 rna_counts_path <- file.path(rna_dir, "GSE140493_snmC2T-seq.gene_rna_counts.4358cell.60606gene.csv.gz")
 
-# Output directory
 EVAL_OUT_DIR <- file.path(out_root, "eval_vs_rna", CHR_USE)
 dir.create(EVAL_OUT_DIR, recursive = TRUE, showWarnings = FALSE)
 
-# Per-model checkpoints (tmp) — you already deleted old checkpoints
+# Per-model checkpoints (tmp)
+suppressPackageStartupMessages(library(digest))
+
 CHECKPOINT_ROOT <- "/tmp/GAS_step3_checkpoint"
-CHECKPOINT_TAG  <- paste0(DATASET_NAME, "_", CHR_USE, "_dir-", direction, "_label-", METH_LABEL_LEVEL)
-CKPT_DIR        <- file.path(CHECKPOINT_ROOT, CHECKPOINT_TAG)
+
+# ---- Record key parameters used in this assessment ----
+eval_params <- list(
+  DATASET_NAME = DATASET_NAME,
+  CHR_USE = CHR_USE,
+  direction = direction,
+  METH_LABEL_LEVEL = METH_LABEL_LEVEL,
+  DE_N = DE_N,
+  HVG_N = HVG_N,
+  summary_fun = "median", 
+  EVAL_CP10K_LOG1P = EVAL_CP10K_LOG1P,
+  CLIP_NEGATIVE_COR = CLIP_NEGATIVE_COR,
+  MIN_GENE_OK_FRAC = MIN_GENE_OK_FRAC,
+  MIN_GROUPS_OK_IN_ROW = MIN_GROUPS_OK_IN_ROW
+)
+
+PARAM_HASH <- digest::digest(eval_params)
+
+# ---- versioned folder: keeps old checkpoints intact ----
+CHECKPOINT_TAG <- paste0(
+  DATASET_NAME, "_", CHR_USE,
+  "_dir-", direction,
+  "_label-", METH_LABEL_LEVEL,
+  "_hash-", substr(PARAM_HASH, 1, 10)
+)
+
+CKPT_DIR <- file.path(CHECKPOINT_ROOT, CHECKPOINT_TAG)
 dir.create(CKPT_DIR, recursive = TRUE, showWarnings = FALSE)
+
 message("[ckpt] checkpoint dir: ", CKPT_DIR)
+message("[ckpt] param hash: ", PARAM_HASH)
+
 
 # -----------------------------
 # Assertions & utilities
@@ -145,7 +157,6 @@ if (file.exists(RNA_CELLTYPE_LABEL_PATH)) {
 # ============================================================
 # I/O helpers
 # ============================================================
-
 read_labels_csv <- function(path) {
   if (grepl("\\.tsv(\\.gz)?$", path, ignore.case = TRUE)) {
     df <- readr::read_tsv(path, show_col_types = FALSE)
@@ -160,10 +171,6 @@ read_labels_csv <- function(path) {
     filter(!is.na(group), nzchar(group))
 }
 
-# Robust gz reading via zcat to data.table::fread
-# Supports:
-#  (A) cells×genes: first column = cell_id, remaining columns = genes
-#  (B) genes×cells: first column = gene, remaining columns = cells
 read_rna_counts <- function(path_gz) {
   assert_file_exists(path_gz, "path_gz")
   dt <- data.table::fread(
@@ -197,7 +204,6 @@ read_rna_counts <- function(path_gz) {
   }
 }
 
-# log1p(CP10K)
 normalize_log_cp10k <- function(counts_mat) {
   lib <- rowSums(counts_mat)
   lib[lib == 0] <- NA_real_
@@ -205,7 +211,6 @@ normalize_log_cp10k <- function(counts_mat) {
   log1p(cp10k)
 }
 
-# pseudo-bulk mean: returns K × G matrix (groups × genes)
 pseudobulk_mean <- function(X_cells_genes, groups_vec) {
   stopifnot(nrow(X_cells_genes) == length(groups_vec))
   f <- factor(groups_vec)
@@ -216,15 +221,13 @@ pseudobulk_mean <- function(X_cells_genes, groups_vec) {
   out
 }
 
-# direction transform: meth_score -> GAS
 apply_direction <- function(meth_mat, direction = c("inhibitory","activating","neutral_abs")) {
   direction <- match.arg(direction)
   if (direction == "inhibitory") return(1 - meth_mat)
   if (direction == "activating") return(meth_mat)
-  return(meth_mat) # neutral_abs handled inside correlation tests
+  return(meth_mat)
 }
 
-# ---- ENSG normalization + collapse duplicates (counts must add) ----
 normalize_ensg <- function(x) {
   sub("^(ENSG\\d+).*$", "\\1", x)
 }
@@ -239,35 +242,29 @@ collapse_duplicate_genes_counts <- function(counts_cells_genes) {
   X <- as.matrix(counts_cells_genes)
   colnames(X) <- new
   
-  # collapse duplicate gene columns by SUM (counts add)
   X2 <- t(rowsum(t(X), group = new, reorder = TRUE))
   storage.mode(X2) <- "numeric"
   X2
 }
 
+# ---- NEW: ArchR-like transform on GAS_pb (groups × genes) ----
 archr_like_transform <- function(M_groups_genes, do_cp10k_log1p = TRUE) {
   if (!do_cp10k_log1p) return(M_groups_genes)
   
-  # groups × genes -> genes × groups
-  X <- t(M_groups_genes)
+  X <- t(M_groups_genes)  # genes × groups
   
   cs <- colSums(X, na.rm = TRUE)
   cs[cs == 0] <- NA_real_
   X <- t(t(X) / cs) * 1e4
   
-  # log2(x+1) like ArchR; log1p is also fine, but keep ArchR closer:
   X <- log2(X + 1)
   
-  # back to groups × genes
-  t(X)
+  t(X)  # groups × genes
 }
-
 
 # ============================================================
 # Panel selection on RNA_pb (model-independent)
 # ============================================================
-
-# DE proxy: sd_across_groups * (max-min)
 select_DE_panel <- function(RNA_pb, top_n = 1000L) {
   sdv <- apply(RNA_pb, 2, sd, na.rm = TRUE)
   rng <- apply(RNA_pb, 2, function(x) diff(range(x, na.rm = TRUE)))
@@ -277,7 +274,6 @@ select_DE_panel <- function(RNA_pb, top_n = 1000L) {
   colnames(RNA_pb)[ord][seq_len(min(top_n, length(ord)))]
 }
 
-# HVG proxy: dispersion = var / (mean + eps)
 select_HVG_panel <- function(RNA_pb, top_n = 2000L, eps = 1e-8) {
   mu <- colMeans(RNA_pb, na.rm = TRUE)
   va <- apply(RNA_pb, 2, var, na.rm = TRUE)
@@ -289,8 +285,7 @@ select_HVG_panel <- function(RNA_pb, top_n = 2000L, eps = 1e-8) {
 }
 
 # ============================================================
-# 4 tests (2×2) with Pearson/Spearman
-#   IMPORTANT: use the robust versions you provided
+# 4 tests (2×2) with Pearson/Spearman (robust + coverage gate + clip negative)
 # ============================================================
 
 test_across_genes <- function(GAS_pb, RNA_pb, genes,
@@ -303,11 +298,18 @@ test_across_genes <- function(GAS_pb, RNA_pb, genes,
   genes <- intersect(genes, intersect(colnames(GAS_pb), colnames(RNA_pb)))
   if (length(genes) < 10) return(NA_real_)
   
-  # ---- prefilter genes: must vary across groups in BOTH matrices ----
+  # sd>0 across groups in BOTH
   gx_sd <- apply(GAS_pb[, genes, drop=FALSE], 2, sd, na.rm = TRUE)
   gy_sd <- apply(RNA_pb[, genes, drop=FALSE], 2, sd, na.rm = TRUE)
   keepg <- is.finite(gx_sd) & is.finite(gy_sd) & gx_sd > 0 & gy_sd > 0
   genes <- genes[keepg]
+  if (length(genes) < 10) return(NA_real_)
+  
+  # ---- NEW: coverage gate across groups ----
+  ok_frac_x <- colMeans(is.finite(GAS_pb[, genes, drop=FALSE]))
+  ok_frac_y <- colMeans(is.finite(RNA_pb[, genes, drop=FALSE]))
+  keep_cov <- (ok_frac_x >= MIN_GENE_OK_FRAC) & (ok_frac_y >= MIN_GENE_OK_FRAC)
+  genes <- genes[keep_cov]
   if (length(genes) < 10) return(NA_real_)
   
   groups <- rownames(GAS_pb)
@@ -317,9 +319,8 @@ test_across_genes <- function(GAS_pb, RNA_pb, genes,
     x <- as.numeric(GAS_pb[groups[i], genes])
     y <- as.numeric(RNA_pb[groups[i], genes])
     ok <- is.finite(x) & is.finite(y)
-    if (sum(ok) < 10) next
     
-    # avoid cor() NA due to zero variance inside this row
+    if (sum(ok) < MIN_GROUPS_OK_IN_ROW) next
     if (sd(x[ok]) <= 0 || sd(y[ok]) <= 0) next
     
     if (direction == "neutral_abs") {
@@ -327,7 +328,9 @@ test_across_genes <- function(GAS_pb, RNA_pb, genes,
       c2 <- suppressWarnings(cor(y[ok], (1 - x[ok]), method = method))
       cors[i] <- max(abs(c1), abs(c2), na.rm = TRUE)
     } else {
-      cors[i] <- suppressWarnings(cor(y[ok], x[ok], method = method))
+      ci <- suppressWarnings(cor(y[ok], x[ok], method = method))
+      if (CLIP_NEGATIVE_COR && is.finite(ci) && ci < 0) ci <- 0
+      cors[i] <- ci
     }
   }
   
@@ -346,6 +349,13 @@ test_across_groups <- function(GAS_pb, RNA_pb, genes,
   genes <- intersect(genes, intersect(colnames(GAS_pb), colnames(RNA_pb)))
   if (length(genes) < 10) return(NA_real_)
   
+  # ---- NEW: coverage gate across groups ----
+  ok_frac_x <- colMeans(is.finite(GAS_pb[, genes, drop=FALSE]))
+  ok_frac_y <- colMeans(is.finite(RNA_pb[, genes, drop=FALSE]))
+  keep_cov <- (ok_frac_x >= MIN_GENE_OK_FRAC) & (ok_frac_y >= MIN_GENE_OK_FRAC)
+  genes <- genes[keep_cov]
+  if (length(genes) < 10) return(NA_real_)
+  
   cors <- rep(NA_real_, length(genes))
   for (i in seq_along(genes)) {
     g <- genes[i]
@@ -353,8 +363,6 @@ test_across_groups <- function(GAS_pb, RNA_pb, genes,
     y <- as.numeric(RNA_pb[, g])
     ok <- is.finite(x) & is.finite(y)
     if (sum(ok) < 3) next
-    
-    # avoid cor() NA due to zero variance across groups
     if (sd(x[ok]) <= 0 || sd(y[ok]) <= 0) next
     
     if (direction == "neutral_abs") {
@@ -362,7 +370,9 @@ test_across_groups <- function(GAS_pb, RNA_pb, genes,
       c2 <- suppressWarnings(cor(y[ok], (1 - x[ok]), method = method))
       cors[i] <- max(abs(c1), abs(c2), na.rm = TRUE)
     } else {
-      cors[i] <- suppressWarnings(cor(y[ok], x[ok], method = method))
+      ci <- suppressWarnings(cor(y[ok], x[ok], method = method))
+      if (CLIP_NEGATIVE_COR && is.finite(ci) && ci < 0) ci <- 0
+      cors[i] <- ci
     }
   }
   
@@ -374,7 +384,6 @@ test_across_groups <- function(GAS_pb, RNA_pb, genes,
 # ============================================================
 # Label builders
 # ============================================================
-
 build_meth_labels <- function(annot_path, level = c("cell_type","MajorType","SubType")) {
   level <- match.arg(level)
   annotation <- readRDS(annot_path)
@@ -397,7 +406,6 @@ build_rna_labels <- function(celltype_path, cluster_path) {
 
 # ============================================================
 # Step 3.1: Build RNA pseudo-bulk (K×G)
-#   IMPORTANT: collapse_duplicate_genes_counts MUST happen BEFORE normalization
 # ============================================================
 message("[RNA] reading counts: ", rna_counts_path)
 rna_counts <- read_rna_counts(rna_counts_path)
@@ -417,7 +425,6 @@ lab_rna <- build_rna_labels(RNA_CELLTYPE_LABEL_PATH, RNA_CLUSTER_LABEL_PATH)
 message("[labels] RNA label groups: ", length(unique(lab_rna$group)),
         "  cells: ", nrow(lab_rna))
 
-# Keep RNA cells with labels
 common_rna_cells <- intersect(rownames(rna_counts), lab_rna$cell)
 message("[labels] overlap RNA counts vs RNA labels: ", length(common_rna_cells))
 if (length(common_rna_cells) < 50) stop("Too few RNA cells overlap with RNA labels: ", length(common_rna_cells))
@@ -448,7 +455,6 @@ message("[panel] DE1000=", length(DE1000), " HVG2000=", length(HVG2000))
 
 # ============================================================
 # Step 3.3: For each model, build GAS_pb from meth blocks and run 4 tests
-#   - per-model checkpoint
 # ============================================================
 tests <- c(
   "T1_AcrossGenes_DE1000",
@@ -463,7 +469,6 @@ list_model_dirs <- function(out_root) {
   xs[file.info(xs)$isdir]
 }
 
-# Minimal row annotation (optional, never blocks evaluation)
 row_anno_list <- list()
 load_model_class_safe <- function(model_name) {
   candidates <- c(
@@ -492,14 +497,13 @@ load_model_class_safe <- function(model_name) {
   tibble(region=region, weight=weight, boundary=boundary, missing=missing, window=window)
 }
 
-
-# ---- checkpoint file naming ----
 ckpt_path_scores <- function(model_name) file.path(CKPT_DIR, paste0(model_name, "_scores.rds"))
 
 save_model_ckpt <- function(model_name, sP, sS, K_use, n_genes, n_blocks, n_blocks_used) {
   obj <- list(
     model = model_name,
     tests = tests,
+    param_hash <- PARAM_HASH,
     pearson = sP,
     spearman = sS,
     K_use = K_use,
@@ -519,11 +523,22 @@ save_model_ckpt <- function(model_name, sP, sS, K_use, n_genes, n_blocks, n_bloc
 read_model_ckpt <- function(model_name) {
   p <- ckpt_path_scores(model_name)
   if (!file.exists(p)) return(NULL)
+  
   x <- tryCatch(readRDS(p), error = function(e) NULL)
   if (is.null(x)) return(NULL)
+  
+  # minimal structure check
   if (!is.list(x) || is.null(x$pearson) || is.null(x$spearman)) return(NULL)
+  
+  # ---- NEW: param hash compatibility gate ----
+  # If old ckpt doesn't have param_hash, or hash differs, treat as cache-miss
+  if (is.null(x$param_hash) || !is.character(x$param_hash) || length(x$param_hash) != 1L) return(NULL)
+  if (!exists("PARAM_HASH", inherits = TRUE)) stop("[ckpt] PARAM_HASH not found in environment.")
+  if (!identical(x$param_hash, PARAM_HASH)) return(NULL)
+  
   x
 }
+
 
 score_mat_pearson <- list()
 score_mat_spearman <- list()
@@ -541,7 +556,6 @@ for (model_dir in model_dirs) {
     next
   }
   
-  # checkpoint hit?
   ck <- read_model_ckpt(model_name)
   if (!is.null(ck)) {
     message("[ckpt] hit: ", model_name, "  (skip recompute)  saved=", ck$timestamp)
@@ -563,7 +577,6 @@ for (model_dir in model_dirs) {
   
   row_anno_list[[model_name]] <- load_model_class_safe(model_name)
   
-  # First block to get cell universe
   m0 <- readRDS(block_files[[1]])
   meth_cells <- rownames(m0)
   
@@ -584,7 +597,7 @@ for (model_dir in model_dirs) {
   
   for (bi in seq_along(block_files)) {
     f <- block_files[[bi]]
-    M <- readRDS(f)  # dense: cells × genes (meth_score)
+    M <- readRDS(f)  # cells × genes (meth_score)
     
     keep_cells <- intersect(cell_order, rownames(M))
     if (length(keep_cells) < 50) {
@@ -596,7 +609,7 @@ for (model_dir in model_dirs) {
     stopifnot(length(grp) == nrow(M))
     
     GAS <- apply_direction(M, direction = direction)
-    GAS_pb_blk <- pseudobulk_mean(GAS, grp)  # K × genes_in_block
+    GAS_pb_blk <- pseudobulk_mean(GAS, grp)  # groups × genes_in_block
     
     GAS_pb_parts[[bi]] <- GAS_pb_blk
     gene_parts[[bi]]   <- colnames(GAS_pb_blk)
@@ -614,7 +627,6 @@ for (model_dir in model_dirs) {
   GAS_pb_parts <- GAS_pb_parts[ok_parts]
   gene_parts   <- gene_parts[ok_parts]
   
-  # enforce consistent group order across blocks
   K_ref <- rownames(GAS_pb_parts[[1]])
   for (i in seq_along(GAS_pb_parts)) {
     GAS_pb_parts[[i]] <- GAS_pb_parts[[i]][K_ref, , drop = FALSE]
@@ -626,7 +638,6 @@ for (model_dir in model_dirs) {
     GAS_pb <- GAS_pb[, !duplicated(colnames(GAS_pb)), drop = FALSE]
   }
   
-  # Align RNA_pb to same groups vocabulary
   K_use <- intersect(rownames(GAS_pb), rownames(RNA_pb))
   if (length(K_use) < 2) {
     message("[warn] too few aligned groups between GAS_pb and RNA_pb (K_use=", length(K_use), "); skip model: ", model_name)
@@ -637,7 +648,9 @@ for (model_dir in model_dirs) {
   GAS_pb2 <- GAS_pb[K_use, , drop = FALSE]
   RNA_pb2 <- RNA_pb[K_use, , drop = FALSE]
   
-  # Run 4 tests (Pearson + Spearman)
+  # ---- NEW: ArchR-like scaling on GAS_pb2 before evaluation ----
+  GAS_pb2 <- archr_like_transform(GAS_pb2, do_cp10k_log1p = EVAL_CP10K_LOG1P)
+  
   sP <- numeric(length(tests)); names(sP) <- tests
   sS <- numeric(length(tests)); names(sS) <- tests
   
@@ -656,7 +669,6 @@ for (model_dir in model_dirs) {
   score_mat_pearson[[model_name]]  <- sP
   score_mat_spearman[[model_name]] <- sS
   
-  # per-model checkpoint (atomic)
   save_model_ckpt(
     model_name = model_name,
     sP = sP,
@@ -719,12 +731,7 @@ message("[save] ", ranks_spearman_path)
 
 # ============================================================
 # Heatmap of ranks (models × 4 tests), ArchR-style formatting
-#   REQUIREMENTS implemented:
-#   - rank values: use ranks_df as-is
-#   - model IDs: 1..N by CSV/top-to-bottom order (no re-sorting)
-#   - show family bar on left
-#   - column names: 1..4 (hide long test names)
-#   - row names: model IDs (hide long model names)
+#   (your heatmap code unchanged below)
 # ============================================================
 
 suppressPackageStartupMessages({
@@ -732,7 +739,7 @@ suppressPackageStartupMessages({
 })
 
 make_row_annotation <- function(model_names, row_anno_list) {
-  anno <- lapply(model_names, function(nm) {
+  anno <- future_lapply(model_names, function(nm) {
     if (!is.null(row_anno_list[[nm]])) row_anno_list[[nm]] else tibble(
       region  = NA_character_,
       weight  = NA_character_,
@@ -773,46 +780,34 @@ sanitize_annotation_row <- function(anno_row_df) {
   anno_row_df
 }
 
-# ---- NEW: ArchR-style rank heatmap with numeric IDs + numbered tests ----
 plot_rank_heatmap_archr_style <- function(ranks_df, metric) {
   
   stopifnot(all(c("model", tests) %in% colnames(ranks_df)))
   
-  # ---- model names in input order ----
   model_names <- ranks_df$model
   
-  # ---- Build rank matrix (N × 4) using ranks_df as-is ----
   mat_raw <- as.matrix(ranks_df[, tests, drop = FALSE])
   storage.mode(mat_raw) <- "numeric"
   rownames(mat_raw) <- model_names
   
-  # ---- ArchR-style overall performance: mean rank across 4 tests (smaller = better) ----
   mean_rank <- rowMeans(mat_raw, na.rm = TRUE)
-  # If any NA remain (all-NA rows), push them to bottom
   mean_rank[!is.finite(mean_rank)] <- Inf
   
-  ord <- order(mean_rank, decreasing = FALSE)  # best (lowest mean rank) on top
+  ord <- order(mean_rank, decreasing = FALSE)
   
-  # ---- Reorder everything by performance ----
   model_names_ord <- model_names[ord]
   mat <- mat_raw[model_names_ord, , drop = FALSE]
   mean_rank_ord <- mean_rank[ord]
   
-  # ---- Assign numeric IDs after sorting (1..N) ----
   model_id <- seq_along(model_names_ord)
   rownames(mat) <- as.character(model_id)
-  
-  # ---- Column labels: 1..4 (hide long test names) ----
   colnames(mat) <- as.character(seq_len(ncol(mat)))
   
-  # ---- Display numbers inside each cell = rank values ----
   disp_numbers <- apply(mat, 2, as.character)
   
-  # ---- Build annotation from per-model metadata, show ONE family column ----
   anno_full <- make_row_annotation(model_names_ord, row_anno_list)
   anno_full <- sanitize_annotation_row(anno_full)
   
-  # default family = region; fallback parse
   if (!is.null(anno_full) && "region" %in% colnames(anno_full)) {
     family <- as.character(anno_full[model_names_ord, "region"])
   } else {
@@ -825,10 +820,8 @@ plot_rank_heatmap_archr_style <- function(ranks_df, metric) {
   palFamily <- ArchR::paletteDiscrete(values = gtools::mixedsort(unique(family)))
   names(palFamily) <- gtools::mixedsort(unique(family))
   
-  # ---- ArchR palette ----
   cols <- rev(ArchR::paletteContinuous(set = "sambaNight"))
   
-  # ---- Save mapping tables (IDs now correspond to sorted order) ----
   map_model_path <- file.path(EVAL_OUT_DIR, sprintf("heatmap_%s_model_id_map.csv", metric))
   atomic_write_csv(
     tibble(
@@ -848,20 +841,18 @@ plot_rank_heatmap_archr_style <- function(ranks_df, metric) {
   )
   message("[save] ", map_test_path)
   
-  # ---- Output paths ----
   pdf_path <- file.path(EVAL_OUT_DIR, sprintf("heatmap_rank_%s_%s_archrStyle.pdf", DATASET_NAME, metric))
   png_path <- file.path(EVAL_OUT_DIR, sprintf("heatmap_rank_%s_%s_archrStyle.png", DATASET_NAME, metric))
   
   pdf_tmp <- paste0(pdf_path, ".tmp_", Sys.getpid())
   png_tmp <- paste0(png_path, ".tmp_", Sys.getpid())
   
-  # ---- Plot PDF ----
   pdf(pdf_tmp, width = 10, height = 10)
   pheatmap::pheatmap(
     mat,
-    labels_row = rownames(mat),   # numeric IDs
-    labels_col = colnames(mat),   # 1..4
-    annotation_row = anno_row,    # family bar on left
+    labels_row = rownames(mat),
+    labels_col = colnames(mat),
+    annotation_row = anno_row,
     annotation_colors = list(family = palFamily),
     color = cols,
     border_color = "black",
@@ -876,7 +867,6 @@ plot_rank_heatmap_archr_style <- function(ranks_df, metric) {
   file.rename(pdf_tmp, pdf_path)
   message("[save] ", pdf_path)
   
-  # ---- Plot PNG ----
   png(png_tmp, width = 3000, height = 3000, res = 300)
   pheatmap::pheatmap(
     mat,
@@ -900,14 +890,11 @@ plot_rank_heatmap_archr_style <- function(ranks_df, metric) {
   invisible(list(mat = mat, anno_row = anno_row, mean_rank = mean_rank_ord))
 }
 
-# ---- run (Pearson & Spearman) ----
 plot_rank_heatmap_archr_style(ranks_pearson,  metric = "pearson")
 plot_rank_heatmap_archr_style(ranks_spearman, metric = "spearman")
 
-
 # ============================================================
 # Best / median / worst model lists (for Step 4)
-# Primary test = T1 (AcrossGenes × DE1000) on Pearson
 # ============================================================
 pick_models <- function(ranks_df, test_col, n_best = 2L, n_worst = 2L) {
   m <- ranks_df %>% select(model, all_of(test_col)) %>% arrange(.data[[test_col]])
