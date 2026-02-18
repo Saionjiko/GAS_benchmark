@@ -13,19 +13,17 @@ ensure_dir <- function(p) { if (!dir.exists(p)) dir.create(p, recursive = TRUE);
 make_meth_model <- function(
     name,
     region = c("promoter", "genebody"),
-    width_bp = NULL,                 # total promoter width centered at TSS
+    width_bp = NULL,                 
     gb_up_bp = NULL, gb_down_bp = NULL,
     max_dist_bp = NULL,
     weight = c("constant", "exp"),
     decay_bp = NULL,                 
-    direction = c("activity_1m","methylation_raw"),
     boundary = TRUE,                
     missing = c("drop_missing", "impute1_within_feature"),
     notes = NULL
 ) {
   region <- match.arg(region)
   weight <- match.arg(weight)
-  direction <- match.arg(direction)
   missing <- match.arg(missing)
   
   if (region == "promoter" && is.null(width_bp)) stop("promoter requires width_bp")
@@ -44,7 +42,6 @@ make_meth_model <- function(
     weight = weight,
     decay_bp = decay_bp,
     boundary = boundary,
-    direction = direction,
     missing = missing,
     notes = notes
   )
@@ -55,14 +52,15 @@ build_meth_family <- function() {
   models <- list()
   
   # ==========================================================================================
-  # Promoter constant windows (aligns with ATAC promoter family)
+  # 1-6 Promoter constant windows (aligns with ATAC promoter family)
   # ==========================================================================================
-  for (kb in c(1,2,5,10,25,50,100)) {
+  for (kb in c(1,2,5,10,25,50)) {
     nm <- paste0("Meth-Promoter-", kb, "kb-Const-Dir1m-MissImpute1")
     models[[nm]] <- make_meth_model(
       name = nm,
       region = "promoter",
-      width_bp = kb * 1000L,
+      boundary = FALSE,
+      width_bp = kb * 2000L,
       weight = "constant",
       missing = "impute1_within_feature",     
       notes = "Promoter methylation inhibitory: score = 1 - mean(beta) within promoter window."
@@ -70,7 +68,8 @@ build_meth_family <- function() {
   }
   
   # ==========================================================================================
-  # TSS exponential (aligns with Custom Gene Models From TSS) — add both boundary variants
+  # 16-23 TSS exponential (aligns with TSSExponentialNoGeneBoundary / GeneBoundary)
+  # 4 × NoBoundary + 4 × GeneBoundary
   # ==========================================================================================
   decay_list <- c(5000L, 10000L, 25000L, 100000L)
   
@@ -81,37 +80,44 @@ build_meth_family <- function() {
     models[[nm0]] <- make_meth_model(
       name = nm0,
       region = "promoter",
-      width_bp = 200000L,           
+      
+      # reference region: TSS point 
+      width_bp = 1L,
+      
+      # contribution support: within ±100kb
+      max_dist_bp = 100000L,
+      
       weight = "exp",
       decay_bp = L,
-      boundary = FALSE,             
-      direction = "activity_1m",
+      boundary = FALSE,
       missing = "impute1_within_feature",
       notes = paste0(
-        "TSS exponential within +/-100kb (total 200kb), decay=", L,
+        "TSS exponential: reference=TSS(1bp), support=±100kb, decay=", L,
         ". No gene-boundary assignment; CpGs may contribute to multiple genes if windows overlap."
       )
     )
+    
     # ---- WithGeneBoundary ----
     nm1 <- paste0("Meth-TSSExponentialGeneBoundary-ExpL", L/1000, "k-Dir1m-MissImpute1")
     models[[nm1]] <- make_meth_model(
       name = nm1,
       region = "promoter",
-      width_bp = 200000L,
+      width_bp = 1L,
+      max_dist_bp = 100000L,
       weight = "exp",
       decay_bp = L,
-      boundary = TRUE,              
-      direction = "activity_1m",
+      boundary = TRUE,
       missing = "impute1_within_feature",
       notes = paste0(
-        "TSS exponential within +/-100kb (total 200kb), decay=", L,
-        ". Gene-boundary-aware assignment (reserved for Step2 implementation)."
+        "TSS exponential: reference=TSS(1bp), support=±100kb, decay=", L,
+        ". Gene-boundary-aware assignment."
       )
     )
   }
   
+  
   # ==========================================================================================
-  # GeneBody extended constant windows (aligns with ATAC GeneBodyExtended)
+  # 7-15 GeneBody extended constant windows (aligns with ATAC GeneBodyExtended)
   # ==========================================================================================
   gb_sets <- list(
     c(0,0), c(1000,0), c(2000,0), c(5000,0),
@@ -127,7 +133,6 @@ build_meth_family <- function() {
       gb_up_bp = up,
       gb_down_bp = down,
       weight = "constant",
-      direction = "methylation_raw",          # beta
       missing = "impute1_within_feature",
       notes = "Gene-body methylation as activity proxy (raw beta)."
     )
@@ -150,8 +155,8 @@ build_meth_family <- function() {
       gb_down_bp = 0L,
       weight = "exp",
       decay_bp = L,
+      max_dist_bp = 100000L,
       boundary = FALSE,                  # NoGeneBoundary
-      direction = "methylation_raw",     # gene body uses beta (raw)
       missing = "impute1_within_feature",
       notes = paste0(
         "GeneBody exponential within +/-100kb of gene body; decay=", L,
@@ -161,7 +166,7 @@ build_meth_family <- function() {
   }
   
   # ============================================================
-  # GeneBodyExtendedExponentialGeneBoundary (ArchR models 28-45)
+  # 28-45 GeneBodyExtendedExponentialGeneBoundary
   # 6 extension sets × 3 decay groups = 18 models
   # ============================================================
   ext_sets <- list(
@@ -203,7 +208,6 @@ build_meth_family <- function() {
         weight = "exp",
         decay_bp = L,
         boundary = TRUE,                 # GeneBoundary
-        direction = "methylation_raw",
         missing = "impute1_within_feature",
         notes = paste0(
           "GeneBody extended exponential within +/-100kb of gene body; ",
@@ -216,6 +220,95 @@ build_meth_family <- function() {
     }
   }
   
+  # ------------------------------------------------------------
+  # 46–49 GeneBodyExponentialGeneBoundary
+  # ------------------------------------------------------------
+  
+  for (L in c(5000L, 10000L, 25000L, 100000L)) {
+    
+    nm <- paste0(
+      "Meth-GeneBodyExponentialGeneBoundary-ExpL",
+      L/1000, "k-DirRaw-MissImpute1"
+    )
+    
+    models[[nm]] <- make_meth_model(
+      name = nm,
+      region = "genebody",
+      
+      gb_up_bp = 0L,
+      gb_down_bp = 0L,
+      
+      max_dist_bp = 100000L,
+      
+      weight = "exp",
+      decay_bp = L,
+      
+      boundary = TRUE,
+      missing = "impute1_within_feature",
+      
+      notes = paste0(
+        "GeneBody exponential within ±100kb of gene body; ",
+        "decay=", L, "; GeneBoundary-aware."
+      )
+    )
+  }
+  
+  # ------------------------------------------------------------
+  # 50–53 ConstantGeneBoundary (TSS-centered constant)
+  # ------------------------------------------------------------
+  
+  for (kb in c(5L, 10L, 25L, 100L)) {
+    
+    nm <- paste0(
+      "Meth-ConstantGeneBoundary-",
+      kb, "kb-DirRaw-MissImpute1"
+    )
+    
+    models[[nm]] <- make_meth_model(
+      name = nm,
+      region = "promoter",
+      
+      # TSS-centered total width
+      width_bp = kb * 2000L,
+      
+      weight = "constant",
+      boundary = TRUE,
+      missing = "impute1_within_feature",
+      
+      notes = paste0(
+        "Constant signal within ", kb,
+        "kb of gene start (TSS-centered); GeneBoundary-aware."
+      )
+    )
+  }
+  
+  # ------------------------------------------------------------
+  # 54–57 TSSExtendedExponentialGeneBoundary
+  # ------------------------------------------------------------
+  
+  for (kb in c(1L, 2L, 5L, 10L)) {
+    
+    nm <- paste0(
+      "Meth-TSSExtendedExponentialGeneBoundary-",
+      kb, "kb-ExpL5k-DirRaw-MissImpute1"
+    )
+    
+    models[[nm]] <- make_meth_model(
+      name = nm,
+      region = "promoter",
+      width_bp = 2L * kb * 1000L,
+      max_dist_bp = 100000L,
+      weight = "exp",
+      decay_bp = 5000L,
+      boundary = TRUE,
+      missing = "impute1_within_feature",
+      
+      notes = paste0(
+        "TSS-extended exponential within ±100kb of TSS; ",
+        "extension ±", kb, "kb; decay=5kb; GeneBoundary-aware."
+      )
+    )
+  }
   
   models
 }
@@ -239,10 +332,10 @@ write_models <- function(models, out_root) {
       width_bp = models[[name]]$width_bp %||% NA_integer_,
       gb_up_bp = models[[name]]$gb_up_bp %||% NA_integer_,
       gb_down_bp = models[[name]]$gb_down_bp %||% NA_integer_,
+      max_dist_bp = models[[name]]$max_dist_bp %||% NA_integer_,
       weight = models[[name]]$weight,
       decay_bp = models[[name]]$decay_bp %||% NA_integer_,
       boundary = models[[name]]$boundary,
-      direction = models[[name]]$direction,
       missing = models[[name]]$missing,
       notes = models[[name]]$notes %||% ""
     ) %>%
