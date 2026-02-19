@@ -1,0 +1,2 @@
+model,chr,n_cells,n_clusters,n_genes_total,n_HVG,n_DiffGenes,Pearson_VarGenes_GeneLvl_median,Pearson_VarGenes_GroupLvl_median,Pearson_DiffGenes_GeneLvl_median,Pearson_DiffGenes_GroupLvl_median,Spearman_VarGenes_GeneLvl_median,Spearman_VarGenes_GroupLvl_median,Spearman_DiffGenes_GeneLvl_median,Spearman_DiffGenes_GroupLvl_median
+Meth-GBExt-0kb-0kb-Const-DirRaw-MissImpute1,chr1,4314,15,195,174,73,0.14966779490502286,0,0.5053661034234752,0.0402144015784357,0.12857142857142856,0,0.3785714285714285,0.16012587930396147
