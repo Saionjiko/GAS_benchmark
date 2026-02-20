@@ -8,6 +8,9 @@ suppressPackageStartupMessages({
   library(data.table)
   library(readr)
   library(tibble)
+  library(irlba)
+  library(uwot)
+  library(ggplot2)
 })
 
 # ---------------------------
@@ -632,8 +635,212 @@ make_rank_heatmap_archr(
   family_from_region = FALSE
 )
 
-
-
 cat("[heatmap] wrote: ", heatmap_prefix, ".pdf/.png + maps\n", sep="")
 cat("\n[done] outputs in:\n", out_dir, "\n")
 
+# ============================================================
+# Step 4A — Pick marker genes from RNA (cluster markers)
+#   Output:
+#     - marker_genes_by_cluster.csv (cluster, gene, score, ...)
+#     - marker_genes_union.txt      (unique genes)
+# ============================================================
+
+suppressPackageStartupMessages({
+  library(data.table)
+  library(dplyr)
+  library(readr)
+  library(tibble)
+})
+
+# ---- load cached cluster labels (from your Step 1 cache) ----
+lab <- readr::read_csv(cache_labels_csv, show_col_types = FALSE) %>%
+  dplyr::distinct(cell, .keep_all = TRUE)
+stopifnot(all(c("cell","cluster") %in% colnames(lab)))
+
+common_cells <- readRDS(cache_cells_rds)
+common_cells <- intersect(common_cells, lab$cell) |> sort()
+lab <- lab[match(common_cells, lab$cell), ]
+stopifnot(all(lab$cell == common_cells))
+
+cluster <- as.character(lab$cluster)
+
+# ---- read RNA counts again (cells x genes) and logCP10K ----
+message("[RNA] read counts for marker selection")
+rna_counts <- read_rna_counts_fread(rna_counts_path)
+stopifnot(all(common_cells %in% rownames(rna_counts)))
+rna_counts <- rna_counts[common_cells, , drop = FALSE]
+
+message("[RNA] collapse duplicate ENSG BEFORE normalize")
+rna_counts <- collapse_duplicate_genes_counts(rna_counts)
+
+message("[RNA] log1p(CP10K)")
+rna_log <- normalize_log_cp10k(rna_counts)
+rm(rna_counts); gc()
+
+# ---- marker selection: per-cluster mean shift (simple, robust) ----
+# score(gene, cluster g) = mean(logCP10K in g) - mean(logCP10K overall)
+marker_top_n <- 50L  # adjust: 20/50/100
+min_cells_marker <- 30L
+
+cl <- factor(cluster)
+mu_all <- colMeans(rna_log, na.rm = TRUE)
+
+marker_tbl <- lapply(levels(cl), function(g) {
+  idx <- which(cl == g)
+  if (length(idx) < min_cells_marker) return(NULL)
+  mu_g <- colMeans(rna_log[idx, , drop = FALSE], na.rm = TRUE)
+  score <- (mu_g - mu_all)
+  # also compute detection fraction (optional)
+  det_g <- colMeans(rna_log[idx, , drop = FALSE] > 0, na.rm = TRUE)
+  det_all <- colMeans(rna_log > 0, na.rm = TRUE)
+  
+  tibble(
+    cluster = g,
+    gene = names(score),
+    score = as.numeric(score),
+    det_g = as.numeric(det_g),
+    det_all = as.numeric(det_all)
+  ) %>%
+    arrange(desc(score)) %>%
+    slice_head(n = marker_top_n)
+})
+
+marker_df <- bind_rows(marker_tbl)
+
+# optional filter: require decent detection in cluster and not ubiquitous
+marker_df <- marker_df %>%
+  filter(det_g >= 0.10) %>%          # at least 10% cells express
+  arrange(cluster, desc(score))
+
+# ---- write outputs ----
+marker_csv <- file.path(out_dir, "marker_genes_by_cluster.csv")
+readr::write_csv(marker_df, marker_csv)
+
+marker_union <- marker_df %>%
+  group_by(cluster) %>%
+  slice_head(n = marker_top_n) %>%
+  ungroup() %>%
+  pull(gene) %>%
+  unique()
+
+marker_txt <- file.path(out_dir, "marker_genes_union.txt")
+writeLines(marker_union, marker_txt)
+
+cat("[markers] wrote:\n  - ", marker_csv, "\n  - ", marker_txt, "\n", sep="")
+cat("[markers] union genes =", length(marker_union), "\n")
+
+# ============================================================
+# Step 4A2 — Convert ENSG -> gene symbol + pick a clean marker panel
+#   Outputs:
+#     - marker_genes_by_cluster_with_symbol.csv
+#     - marker_panel_clean_by_cluster.csv   (final per-cluster markers)
+#     - marker_panel_clean_union.txt        (final union gene list for plots)
+# ============================================================
+
+suppressPackageStartupMessages({
+  library(rtracklayer)
+  library(stringr)
+})
+
+# ---- 0) load marker_df from memory (just created above) ----
+stopifnot(exists("marker_df"))
+stopifnot(all(c("cluster","gene","score","det_g","det_all") %in% colnames(marker_df)))
+
+# ---- 1) build gene_id -> gene_name mapping from GTF ----
+# IMPORTANT: set this to your real gencode path
+GTF_PATH <- "/storage2/Data/Luo2022/gencode.v28lift37.annotation.gtf.gz"
+stopifnot(file.exists(GTF_PATH))
+
+message("[annot] import GTF and build gene_id -> gene_name map")
+gtf <- rtracklayer::import(GTF_PATH)
+
+gene_annot <- gtf[gtf$type == "gene"]
+gene_map <- tibble(
+  gene_id = sub("\\..*$", "", as.character(gene_annot$gene_id)),
+  gene_symbol = as.character(gene_annot$gene_name),
+  gene_type = as.character(gene_annot$gene_type)
+) %>%
+  distinct(gene_id, .keep_all = TRUE)
+
+# ---- 2) join symbols into marker table ----
+marker_df2 <- marker_df %>%
+  mutate(gene_id = sub("\\..*$", "", gene)) %>%   # in case any version sneaks in
+  left_join(gene_map, by = "gene_id")
+
+# write readable table
+marker_csv2 <- file.path(out_dir, "marker_genes_by_cluster_with_symbol.csv")
+readr::write_csv(marker_df2, marker_csv2)
+cat("[annot] wrote: ", marker_csv2, "\n", sep="")
+
+# ---- 3) define "clean marker" rules ----
+# Rationale:
+# - score high: cluster mean higher than global mean
+# - det_g high enough: not just a tiny subset
+# - det_all not too high: avoid housekeeping / ubiquitous genes
+# - optional: keep protein_coding only (often nicer for posters)
+score_cut  <- 0.5
+detg_cut   <- 0.30
+detall_cut <- 0.60
+keep_protein_coding <- TRUE
+
+marker_df_clean <- marker_df2 %>%
+  filter(
+    is.finite(score),
+    is.finite(det_g),
+    is.finite(det_all),
+    score >= score_cut,
+    det_g >= detg_cut,
+    det_all <= detall_cut
+  )
+
+if (keep_protein_coding) {
+  marker_df_clean <- marker_df_clean %>%
+    filter(is.na(gene_type) | gene_type == "protein_coding")
+}
+
+cat("[clean] after filters: rows=", nrow(marker_df_clean),
+    " ; clusters=", length(unique(marker_df_clean$cluster)), "\n")
+
+# ---- 4) pick final markers: top K per cluster ----
+topK_per_cluster <- 3L   # try 2–5; 3 gives ~45 genes for 15 clusters
+
+marker_panel <- marker_df_clean %>%
+  group_by(cluster) %>%
+  arrange(desc(score), desc(det_g), det_all) %>%
+  slice_head(n = topK_per_cluster) %>%
+  ungroup()
+
+# if some clusters have <K after strict filtering, relax per-cluster fallback:
+# fill missing clusters with looser criteria (optional but helpful)
+missing_clusters <- setdiff(unique(marker_df2$cluster), unique(marker_panel$cluster))
+if (length(missing_clusters) > 0) {
+  message("[clean] some clusters missing after strict filter: ", paste(missing_clusters, collapse=", "))
+  # fallback: relax score/detg a bit, still keep det_all constraint
+  fallback <- marker_df2 %>%
+    filter(cluster %in% missing_clusters,
+           is.finite(score), is.finite(det_g), is.finite(det_all),
+           score >= 0.3, det_g >= 0.15, det_all <= 0.70) %>%
+    { if (keep_protein_coding) filter(., is.na(gene_type) | gene_type == "protein_coding") else . } %>%
+    group_by(cluster) %>%
+    arrange(desc(score), desc(det_g), det_all) %>%
+    slice_head(n = topK_per_cluster) %>%
+    ungroup()
+  marker_panel <- bind_rows(marker_panel, fallback)
+}
+
+# write per-cluster panel table
+panel_csv <- file.path(out_dir, "marker_panel_clean_by_cluster.csv")
+readr::write_csv(marker_panel, panel_csv)
+
+# union list for plotting
+marker_panel_union <- marker_panel %>%
+  mutate(gene_plot = ifelse(!is.na(gene_symbol) & nzchar(gene_symbol), gene_symbol, gene_id)) %>%
+  pull(gene_plot) %>%
+  unique()
+
+panel_txt <- file.path(out_dir, "marker_panel_clean_union.txt")
+writeLines(marker_panel_union, panel_txt)
+
+cat("[panel] wrote:\n  - ", panel_csv, "\n  - ", panel_txt, "\n", sep="")
+cat("[panel] union genes =", length(marker_panel_union),
+    " (topK=", topK_per_cluster, " per cluster)\n", sep="")
