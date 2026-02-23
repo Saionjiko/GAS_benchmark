@@ -38,15 +38,12 @@ sanitize_gene_id <- function(x) {
   sub("\\.\\d+.*$", "", x)
 }
 
-# keep chr1-22 only (match your methylation beta matrices)
 keep_chr <- paste0("chr", CHRS)
 
 message("[gene-anno] Importing gene features from: ", GTF_PATH)
 
-# Import only 'gene' features (fast; avoids transcript/exon explosion)
 gr_gene <- rtracklayer::import(GTF_PATH, format = "gtf", feature.type = "gene")
 
-# Filter to chr1-22
 gr_gene <- gr_gene[as.character(seqnames(gr_gene)) %in% keep_chr]
 
 # Convert to a clean gene table
@@ -61,11 +58,11 @@ gene_df <- as.data.frame(gr_gene) %>%
     gene_name = if ("gene_name" %in% names(.)) as.character(gene_name) else NA_character_,
     gene_type = if ("gene_type" %in% names(.)) as.character(gene_type) else NA_character_
   ) %>%
-  # If multiple rows map to same gene_id, keep the widest span
+
   group_by(gene_id) %>%
   slice_max(order_by = (end - start), n = 1, with_ties = FALSE) %>%
   ungroup() %>%
-  # TSS definition A (gene-level)
+
   mutate(tss = if_else(strand == "+", start, end)) %>%
   arrange(chr, tss, start, end)
 
@@ -79,7 +76,6 @@ message("Saved gene annotation to: ", anno_out)
 
 # ---------------------------
 # Gene-boundary ranges for boundary=TRUE models
-# Approximate per-gene non-overlap assignment using midpoints between neighboring TSS.
 # ---------------------------
 compute_gene_boundaries_by_tss <- function(df_chr) {
   stopifnot(all(df_chr$chr == df_chr$chr[1]))
@@ -194,61 +190,18 @@ build_gene_windows <- function(gene_df, model) {
 }
 
 # ============================================================
-# Weights (constant / exp)
-# ============================================================
-weights_constant <- function(n) rep.int(1, n)
-
-weights_exp_promoter <- function(pos, tss, L) {
-  d <- abs(pos - tss)
-  exp(-d / L)
-}
-
-weights_exp_genebody <- function(pos, gb_start, gb_end, L) {
-  d <- ifelse(pos < gb_start, gb_start - pos,
-              ifelse(pos > gb_end, pos - gb_end, 0))
-  exp(-d / L)
-}
-
-# ============================================================
-# impute1_within_feature: missing beta temporarily treated as 1 ONLY in aggregation
-# ============================================================
-aggregate_gene_score <- function(beta_sub, obs_sub, w,
-                                 missing_mode = c("impute1_within_feature","drop_missing")) {
-  missing_mode <- match.arg(missing_mode)
-  
-  if (length(w) == 0L) return(rep(NA_real_, nrow(beta_sub)))
-  total_wsum <- sum(w)
-  if (!is.finite(total_wsum) || total_wsum <= 0) return(rep(NA_real_, nrow(beta_sub)))
-  
-  beta_wsum <- as.numeric(beta_sub %*% w)
-  obs_wsum  <- as.numeric(obs_sub  %*% w)
-  
-  if (missing_mode == "impute1_within_feature") {
-    (beta_wsum + (total_wsum - obs_wsum)) / total_wsum
-  } else {
-    out <- beta_wsum / obs_wsum
-    out[obs_wsum == 0] <- NA_real_
-    out
-  }
-}
-
-
-# ============================================================
 # Resolve model path
 # ============================================================
-resolve_model_path <- function(model_path, model_name, PROJECT_ROOT) {
-  if (!is.null(model_path) && !is.na(model_path) && nzchar(model_path)) {
-    p <- as.character(model_path)
-    if (file.exists(p)) return(p)
-    
-    p2 <- file.path(PROJECT_ROOT, p)
-    if (file.exists(p2)) return(p2)
+resolve_model_path <- function(model_path, model_name) {
+  if (is.null(model_path) || is.na(model_path) || !nzchar(model_path)) {
+    stop("Missing model path for: ", model_name)
   }
   
-  p3 <- file.path(PROJECT_ROOT, "models", paste0(model_name, ".rds"))
-  if (file.exists(p3)) return(p3)
+  if (!file.exists(model_path)) {
+    stop("Model file does not exist: ", model_path)
+  }
   
-  stop("Cannot resolve model path for: ", model_name)
+  model_path
 }
 
 # ============================================================
@@ -380,7 +333,7 @@ run_chr_worker <- function(chr, gene_df, models_df, out_root, PROJECT_ROOT, gene
   
   for (mi in seq_len(nrow(models_df))) {
     model_name <- as.character(models_df$name[mi])
-    model_path <- resolve_model_path(models_df$path[mi], model_name, PROJECT_ROOT)
+    model_path <- resolve_model_path(models_df$path[mi], model_name)
     
     model <- readRDS(model_path)
     validate_model(model)
