@@ -20,10 +20,13 @@ GAS_benchmark/data/intermediate/
 GAS_benchmark/results/
 GAS_benchmark/figures/
 
-# GAS_benchmark_DNA_methylation）
+# GAS_benchmark_DNA_methylation
 GAS_benchmark_DNA_methylation/env/
 GAS_benchmark_DNA_methylation/logs/
 GAS_benchmark_DNA_methylation/results/
+GAS_benchmark_DNA_methylation/outputs/
+GAS_benchmark_DNA_methylation/models/
+GAS_benchmark_DNA_methylation/metadata/
 
 *.allc.tsv.gz
 *.mc.tsv.gz
@@ -40,3 +43,5 @@ GAS_benchmark_DNA_methylation/results/
 
 .DS_Store
 Thumbs.db
+
+GAS_benchmark_ATAC/*.arrow

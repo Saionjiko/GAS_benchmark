@@ -19,15 +19,10 @@ panel_hvg_n <- 2000L
 panel_diff_n <- 1000L
 
 RUN_NAME <- paste0(
-  "L1_clusterAgg_2x2_allmodels_",
-  "snmC2T_",
   CHR_USE,
   "_dir", direction,
   "_k", k_clust,
-  "_minCl", min_cells_cluster,
-  "_panelH", panel_hvg_n,
-  "_panelD", panel_diff_n,
-  "_v1"
+  "_minCl", min_cells_cluster
 )
 
 out_dir <- file.path(paths$project$root, "outputs", RUN_NAME)

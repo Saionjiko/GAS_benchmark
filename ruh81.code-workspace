@@ -1,0 +1,17 @@
+{
+  "folders": [
+    {
+      "path": "GAS_benchmark_ATAC"
+    },
+    {
+      "path": "GAS_benchmark_DNA_methylation"
+    },
+    {
+      "path": "/storage2/ruh81/GAS_benchmark"
+    },
+    {
+      "path": ".."
+    }
+  ],
+  "settings": {}
+}
