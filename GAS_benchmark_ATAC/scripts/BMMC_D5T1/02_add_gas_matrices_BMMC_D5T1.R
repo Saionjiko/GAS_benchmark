@@ -1,4 +1,4 @@
-## scripts/02_add_gas_matrices_BMMC_D5T1_extended.R
+## scripts/BMMC_D5T1/02_add_gas_matrices_BMMC_D5T1.R
 ## Purpose: Add many GAS model matrices to an existing ArchRProject
 
 options(bitmapType = "cairo")

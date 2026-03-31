@@ -1,7 +1,7 @@
 #!/usr/bin/env Rscript
 
 # ============================================================
-# scripts/03_aggregate_to_knn_groups_BMMC_D5T1.R
+# scripts/BMMC_D5T1/03_aggregate_to_knn_groups_BMMC_D5T1.R
 #
 # Two-mode script (robust):
 #   Mode A (preferred): if ArchRProject RDS is found -> build KNN groups from proj
@@ -22,7 +22,7 @@ suppressPackageStartupMessages({
 })
 
 source("scripts/00_setup.R")
-source("scripts/03a_standardize_group_definition_BMMC_D5T1.R")
+source("scripts/BMMC_D5T1/03a_standardize_group_definition_BMMC_D5T1.R")
 
 # -------------------------
 # 1) Config

@@ -1,0 +1,58 @@
+model_id,model,family,mean_rank
+42,ATAC-GeneBodyExtendedExponentialGeneBoundary-15,Gene body extended + exponential + gene boundary,2
+41,ATAC-GeneBodyExtendedExponentialGeneBoundary-14,Gene body extended + exponential + gene boundary,4
+30,ATAC-GeneBodyExtendedExponentialGeneBoundary-3,Gene body extended + exponential + gene boundary,5.75
+29,ATAC-GeneBodyExtendedExponentialGeneBoundary-2,Gene body extended + exponential + gene boundary,7
+40,ATAC-GeneBodyExtendedExponentialGeneBoundary-13,Gene body extended + exponential + gene boundary,8
+28,ATAC-GeneBodyExtendedExponentialGeneBoundary-1,Gene body extended + exponential + gene boundary,8.25
+44,ATAC-GeneBodyExtendedExponentialGeneBoundary-17,Gene body extended + exponential + gene boundary,9.75
+36,ATAC-GeneBodyExtendedExponentialGeneBoundary-9,Gene body extended + exponential + gene boundary,10.25
+35,ATAC-GeneBodyExtendedExponentialGeneBoundary-8,Gene body extended + exponential + gene boundary,10.5
+45,ATAC-GeneBodyExtendedExponentialGeneBoundary-18,Gene body extended + exponential + gene boundary,11
+32,ATAC-GeneBodyExtendedExponentialGeneBoundary-5,Gene body extended + exponential + gene boundary,11.5
+43,ATAC-GeneBodyExtendedExponentialGeneBoundary-16,Gene body extended + exponential + gene boundary,11.5
+33,ATAC-GeneBodyExtendedExponentialGeneBoundary-6,Gene body extended + exponential + gene boundary,13.25
+47,ATAC-GeneBodyExponentialGeneBoundary-2,Gene body + exponential + gene boundary,13.25
+31,ATAC-GeneBodyExtendedExponentialGeneBoundary-4,Gene body extended + exponential + gene boundary,14
+46,ATAC-GeneBodyExponentialGeneBoundary-1,Gene body + exponential + gene boundary,14.25
+34,ATAC-GeneBodyExtendedExponentialGeneBoundary-7,Gene body extended + exponential + gene boundary,15.5
+37,ATAC-GeneBodyExtendedExponentialGeneBoundary-10,Gene body extended + exponential + gene boundary,16.75
+48,ATAC-GeneBodyExponentialGeneBoundary-3,Gene body + exponential + gene boundary,16.75
+39,ATAC-GeneBodyExtendedExponentialGeneBoundary-12,Gene body extended + exponential + gene boundary,18.5
+38,ATAC-GeneBodyExtendedExponentialGeneBoundary-11,Gene body extended + exponential + gene boundary,19
+25,ATAC-GeneBodyExponentialNoGeneBoundary-2,Gene body + exponential no gene boundary,22.75
+24,ATAC-GeneBodyExponentialNoGeneBoundary-1,Gene body + exponential no gene boundary,23
+49,ATAC-GeneBodyExponentialGeneBoundary-4,Gene body + exponential + gene boundary,23.75
+56,ATAC-TSSExtendedExponentialGeneBoundary-3,TSS exponential + gene boundary,23.75
+54,ATAC-TSSExtendedExponentialGeneBoundary-1,TSS exponential + gene boundary,25.25
+55,ATAC-TSSExtendedExponentialGeneBoundary-2,TSS exponential + gene boundary,26
+26,ATAC-GeneBodyExponentialNoGeneBoundary-3,Gene body + exponential no gene boundary,26.25
+57,ATAC-TSSExtendedExponentialGeneBoundary-4,TSS exponential + gene boundary,27.5
+18,ATAC-TSSExponentialNoGeneBoundary-3,"TSS exponential, no gene boundary",29
+17,ATAC-TSSExponentialNoGeneBoundary-2,"TSS exponential, no gene boundary",29.5
+23,ATAC-TSSExponentialGeneBoundary-4,TSS exponential + gene boundary,31.25
+16,ATAC-TSSExponentialNoGeneBoundary-1,"TSS exponential, no gene boundary",32.75
+53,ATAC-ConstantGeneBoundary-4,Constant gene boundary,33.5
+27,ATAC-GeneBodyExponentialNoGeneBoundary-4,Gene body + exponential no gene boundary,35.25
+52,ATAC-ConstantGeneBoundary-3,Constant gene boundary,35.75
+51,ATAC-ConstantGeneBoundary-2,Constant gene boundary,37
+50,ATAC-ConstantGeneBoundary-1,Constant gene boundary,38
+19,ATAC-TSSExponentialNoGeneBoundary-4,"TSS exponential, no gene boundary",39
+6,ATAC-Promoter-50kb,Promoter,40.5
+4,ATAC-Promoter-10kb,Promoter,41.25
+8,ATAC-GeneBody-1000-1000,Gene body extended,42.75
+10,ATAC-GeneBody-2000-2000,Gene body extended,43.75
+12,ATAC-GeneBody-5000-5000,Gene body extended,44.5
+13,ATAC-GeneBody-5000-0,Gene body extended,45.75
+14,ATAC-GeneBody-10000-10000,Gene body extended,47
+3,ATAC-Promoter-5kb,Promoter,47.25
+11,ATAC-GeneBody-2000-0,Gene body extended,48.25
+15,ATAC-GeneBody-10000-0,Gene body extended,48.5
+9,ATAC-GeneBody-1000-0,Gene body extended,48.75
+5,ATAC-Promoter-25kb,Promoter,49.25
+7,ATAC-GeneBody-0-0,Gene body extended,50.25
+2,ATAC-Promoter-2kb,Promoter,53
+1,ATAC-Promoter-1kb,Promoter,54
+20,ATAC-TSSExponentialGeneBoundary-1,TSS exponential + gene boundary,55
+21,ATAC-TSSExponentialGeneBoundary-2,TSS exponential + gene boundary,55
+22,ATAC-TSSExponentialGeneBoundary-3,TSS exponential + gene boundary,55

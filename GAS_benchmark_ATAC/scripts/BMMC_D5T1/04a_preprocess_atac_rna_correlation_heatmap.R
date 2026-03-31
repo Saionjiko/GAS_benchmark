@@ -1,3 +1,5 @@
+source("scripts/00_setup.R")
+
 # ---- RNA: load your rds.gz ----
 rna_rds_gz <- "~/projects/GAS_benchmark/data/rna/BMMC/GSM4138872_scRNA_BMMC_D1T1.rds"
 RNA <- readRDS(rna_rds_gz)

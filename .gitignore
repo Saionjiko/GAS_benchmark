@@ -45,3 +45,4 @@ GAS_benchmark_DNA_methylation/metadata/
 Thumbs.db
 
 GAS_benchmark_ATAC/*.arrow
+GAS_benchmark_ATAC/Reference/

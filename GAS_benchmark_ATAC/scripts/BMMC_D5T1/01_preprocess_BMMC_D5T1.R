@@ -1,7 +1,7 @@
 options(bitmapType = "cairo")
 Sys.setenv(R_DEFAULT_DEVICE = "png", DISPLAY = "")
 
-source("scripts/00_setup.R") 
+source("scripts/00_setup.R")
 paths <- get("paths", envir = .GlobalEnv)
 
 suppressPackageStartupMessages({

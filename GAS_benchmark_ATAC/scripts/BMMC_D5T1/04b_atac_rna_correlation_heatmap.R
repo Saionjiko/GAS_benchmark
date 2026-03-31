@@ -1,4 +1,4 @@
-## scripts/07_atac_rna_correlation_heatmap.R
+## scripts/BMMC_D5T1/04b_atac_rna_correlation_heatmap.R
 source("scripts/00_setup.R")
 
 suppressPackageStartupMessages({
@@ -16,6 +16,12 @@ suppressPackageStartupMessages({
 # RNA: load and (re)create Seurat object if needed
 rna_rds <- "~/projects/GAS_benchmark/data/rna/BMMC/GSM4138872_scRNA_BMMC_D1T1.rds"
 RNA_raw <- readRDS(rna_rds)
+
+if (inherits(RNA_raw, "Seurat")) {
+  RNA <- RNA_raw
+} else {
+  RNA <- CreateSeuratObject(counts = RNA_raw)
+}
 
 stopifnot("CellType" %in% colnames(RNA@meta.data))
 
