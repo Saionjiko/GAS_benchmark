@@ -361,6 +361,7 @@ write_models <- function(models, out_root) {
   model_dir <- ensure_dir(file.path(out_root, "Models_ATAC"))
   model_rds <- file.path(out_root, "atac_models.rds")
   manifest_csv <- file.path(out_root, "atac_models_manifest.csv")
+  manifest_slim_csv <- file.path(out_root, "atac_models_manifest_slim.csv")
 
   for (nm in names(models)) {
     saveRDS(models[[nm]], file.path(model_dir, paste0(nm, ".rds")))
@@ -394,13 +395,31 @@ write_models <- function(models, out_root) {
   ) %>%
     arrange(model_id)
 
+  manifest_slim <- manifest %>%
+    dplyr::select(
+      model_id,
+      name,
+      source_model_name,
+      promoter_window_bp,
+      gb_up_bp,
+      gb_down_bp,
+      gene_model,
+      extend_upstream_min_bp,
+      extend_upstream_max_bp,
+      extend_downstream_min_bp,
+      extend_downstream_max_bp,
+      notes
+    )
+
   write_csv(manifest, manifest_csv, na = "")
+  write_csv(manifest_slim, manifest_slim_csv, na = "")
 
   invisible(list(
     n_models = nrow(manifest),
     model_dir = model_dir,
     model_rds = model_rds,
-    manifest_csv = manifest_csv
+    manifest_csv = manifest_csv,
+    manifest_slim_csv = manifest_slim_csv
   ))
 }
 
@@ -413,6 +432,7 @@ main <- function() {
   cat("Model directory: ", result$model_dir, "\n", sep = "")
   cat("Combined RDS: ", result$model_rds, "\n", sep = "")
   cat("Manifest CSV: ", result$manifest_csv, "\n", sep = "")
+  cat("Slim manifest CSV: ", result$manifest_slim_csv, "\n", sep = "")
   cat("Note: this definition set follows Supplementary Table 3 and contains 57 ArchR models.\n", sep = "")
 }
 

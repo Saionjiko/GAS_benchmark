@@ -17,9 +17,15 @@ results_dir <- file.path(paths$results, dataset_tag, "KNN_groups")
 figure_dir <- file.path(paths$figures, dataset_tag)
 dir.create(figure_dir, recursive = TRUE, showWarnings = FALSE)
 
-summary_csv <- file.path(results_dir, "model_corr_summary_cluster_2x2.csv")
+summary_csv <- file.path(results_dir, "model_rank_summary_archr_paper.csv")
 model_manifest_csv <- file.path(paths$metadata, "ATAC_models", "atac_models_manifest.csv")
-out_prefix <- file.path(figure_dir, "PBMC_30k_rank_heatmap_archr_style")
+heatmap_prefix <- file.path(figure_dir, "PBMC_30k_rank_heatmap_archr_paper_style")
+
+required_files <- c(summary_csv, model_manifest_csv)
+missing_required <- required_files[!file.exists(required_files)]
+if (length(missing_required) > 0) {
+  stop("Missing required input(s):\n", paste(" -", missing_required, collapse = "\n"))
+}
 
 family_label_map <- c(
   promoter_window = "Promoter",
@@ -49,40 +55,31 @@ family_color_map <- c(
 
 tests_to_rank <- c(
   "Pearson_DiffGenes_GeneLvl_median",
-  "Spearman_DiffGenes_GeneLvl_median",
+  "Pearson_DiffGenes_GroupLvl_median",
   "Pearson_VarGenes_GeneLvl_median",
-  "Spearman_VarGenes_GeneLvl_median"
+  "Pearson_VarGenes_GroupLvl_median"
 )
 
-if (!file.exists(summary_csv)) {
-  stop("Missing summary CSV:\n ", summary_csv)
-}
-if (!file.exists(model_manifest_csv)) {
-  stop("Missing model manifest CSV:\n ", model_manifest_csv)
-}
+rank_cols <- c(
+  "Rank_Pearson_DiffGenes_GeneLvl_median",
+  "Rank_Pearson_DiffGenes_GroupLvl_median",
+  "Rank_Pearson_VarGenes_GeneLvl_median",
+  "Rank_Pearson_VarGenes_GroupLvl_median"
+)
 
 summary_df <- read_csv(summary_csv, show_col_types = FALSE)
 model_manifest <- read_csv(model_manifest_csv, show_col_types = FALSE)
 
-ranks_df <- summary_df %>%
-  dplyr::select(model, dplyr::all_of(tests_to_rank)) %>%
-  dplyr::mutate(
-    dplyr::across(
-      dplyr::all_of(tests_to_rank),
-      ~ dplyr::min_rank(dplyr::desc(.x))
-    )
-  )
-
-model_info <- model_manifest %>%
-  dplyr::select(model_id, name, family) %>%
+plot_df <- summary_df %>%
+  dplyr::left_join(
+    model_manifest %>% dplyr::select(model_id, name, family),
+    by = c("model" = "name", "model_id", "family")
+  ) %>%
   dplyr::mutate(
     family_label = dplyr::recode(family, !!!family_label_map, .default = family)
   )
 
-plot_df <- ranks_df %>%
-  dplyr::left_join(model_info, by = c("model" = "name"))
-
-mat_raw <- as.matrix(plot_df[, tests_to_rank, drop = FALSE])
+mat_raw <- as.matrix(plot_df[, rank_cols, drop = FALSE])
 suppressWarnings(storage.mode(mat_raw) <- "numeric")
 
 mean_rank <- rowMeans(mat_raw, na.rm = TRUE)
@@ -93,7 +90,6 @@ ord <- order(mean_rank, decreasing = FALSE, na.last = TRUE)
 mat <- mat_raw[ord, , drop = FALSE]
 rownames(mat) <- as.character(plot_df$model_id[ord])
 colnames(mat) <- as.character(seq_len(ncol(mat)))
-
 display_numbers <- apply(mat, 2, function(x) as.character(as.integer(x)))
 rownames(display_numbers) <- rownames(mat)
 
@@ -113,14 +109,13 @@ model_id_map <- tibble::tibble(
   family = plot_df$family_label[ord],
   mean_rank = mean_rank[ord]
 )
-
 test_id_map <- tibble::tibble(
   test_id = seq_along(tests_to_rank),
   test_name = tests_to_rank
 )
 
-write_csv(model_id_map, paste0(out_prefix, "_model_id_map.csv"))
-write_csv(test_id_map, paste0(out_prefix, "_test_id_map.csv"))
+write_csv(model_id_map, paste0(heatmap_prefix, "_model_id_map.csv"))
+write_csv(test_id_map, paste0(heatmap_prefix, "_test_id_map.csv"))
 
 plot_heatmap <- function() {
   pheatmap::pheatmap(
@@ -141,14 +136,16 @@ plot_heatmap <- function() {
   )
 }
 
-grDevices::pdf(paste0(out_prefix, ".pdf"), width = 10, height = 10, useDingbats = FALSE)
+grDevices::pdf(paste0(heatmap_prefix, ".pdf"), width = 10, height = 10, useDingbats = FALSE)
 plot_heatmap()
 grDevices::dev.off()
 
-grDevices::png(paste0(out_prefix, ".png"), width = 3000, height = 3000, res = 300)
+grDevices::png(paste0(heatmap_prefix, ".png"), width = 3000, height = 3000, res = 300)
 plot_heatmap()
 grDevices::dev.off()
 
 cat("=== Done ===\n")
-cat("Saved heatmap PDF:\n ", paste0(out_prefix, ".pdf"), "\n", sep = "")
-cat("Saved heatmap PNG:\n ", paste0(out_prefix, ".png"), "\n", sep = "")
+cat("Saved heatmap PDF:\n ", paste0(heatmap_prefix, ".pdf"), "\n", sep = "")
+cat("Saved heatmap PNG:\n ", paste0(heatmap_prefix, ".png"), "\n", sep = "")
+cat("Saved model map:\n ", paste0(heatmap_prefix, "_model_id_map.csv"), "\n", sep = "")
+cat("Saved test map:\n ", paste0(heatmap_prefix, "_test_id_map.csv"), "\n", sep = "")

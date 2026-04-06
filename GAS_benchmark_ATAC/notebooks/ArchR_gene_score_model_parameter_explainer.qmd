@@ -1,0 +1,262 @@
+---
+title: "ArchR Gene Score Model 参数解释"
+format: html
+editor: visual
+---
+
+# 背景
+
+这份笔记用于解释 ArchR `addGeneScoreMatrix()` 中距离衰减模型的关键参数，尤其是：
+
+- `geneModel`
+- `extendUpstream`
+- `extendDownstream`
+- `geneUpstream`
+- `geneDownstream`
+- `useGeneBoundaries`
+- `useTSS`
+
+这里的解释以当前本地 ArchR 版本源码为准，核心函数为：
+
+- `addGeneScoreMatrix()`
+- `.addGeneScoreMat()`
+
+# 1. 外层默认参数
+
+`addGeneScoreMatrix()` 的默认核心参数是：
+
+```r
+geneModel = "exp(-abs(x)/5000) + exp(-1)"
+extendUpstream = c(1000, 100000)
+extendDownstream = c(1000, 100000)
+geneUpstream = 5000
+geneDownstream = 0
+useGeneBoundaries = TRUE
+useTSS = FALSE
+```
+
+真正执行计算的是内部函数 `.addGeneScoreMat()`。
+
+# 2. 先定义“核心基因区域”
+
+源码里先根据 `useTSS` 分两种情况：
+
+- `useTSS = TRUE`
+  - 先把每个基因缩成 `TSS` 单点
+  - 如果 `extendTSS = TRUE`，再把这个点扩成 `TSS ± geneUpstream/geneDownstream`
+- `useTSS = FALSE`
+  - 先用 gene body
+  - 再扩成 `gene body + geneUpstream/geneDownstream`
+
+也就是说，真正的距离衰减不是直接相对原始基因注释整段算的，而是相对这个“核心 geneRegion”算的。
+
+# 3. 再定义“允许纳入候选 tiles 的外层范围”
+
+这一步才用到：
+
+- `extendUpstream = c(min, max)`
+- `extendDownstream = c(min, max)`
+
+## 3.1 `useGeneBoundaries = FALSE`
+
+如果 `useGeneBoundaries = FALSE`，源码很直接：
+
+```r
+extendedGeneRegion <- extendGR(
+  geneRegionz,
+  upstream = max(extendUpstream),
+  downstream = max(extendDownstream)
+)
+```
+
+这意味着：
+
+- 候选 tiles 的最大搜索范围由 `max` 决定
+- `min` 在这个分支里不是主要裁剪参数
+
+## 3.2 `useGeneBoundaries = TRUE`
+
+如果 `useGeneBoundaries = TRUE`，情况更复杂：
+
+- ArchR 会先按基因顺序排序
+- 再根据相邻基因位置来裁剪每个基因的可扩展范围
+
+目标是：
+
+- 至少保留 `min` 定义的近端范围
+- 最远不超过 `max`
+- 同时尽量不侵入邻近基因的领地
+
+所以这里的 `min/max` 不是“只算中间一圈”，而是：
+
+- `min` = 希望至少保留的近端延伸范围
+- `max` = 最多允许扩到的远端边界
+
+如果邻近基因太近，实际范围可能小于 `max`；但源码会检查，确保不要把 `min` 都裁没了，裁没了就报错。
+
+# 4. 上游 1 kb 内会不会被算进去
+
+会。
+
+从源码逻辑看，`min = 1000` 不是“排除 0–1 kb”，而是：
+
+- 至少要把这段近端范围纳入候选区域
+
+所以像：
+
+```r
+extendUpstream = c(1000, 100000)
+```
+
+更接近的含义是：
+
+- 上游近端 1 kb 一定应该覆盖
+- 最远可以扩到 100 kb
+- 中间这些位置都可能进入候选 tiles
+- 是否最终贡献大，要看后面的距离衰减权重
+
+# 5. 真正的距离衰减是怎么计算的
+
+候选 tiles 定好之后，源码会对每个 tile 算一个距离 `x`：
+
+```r
+x <- distance(ranges(geneRegionz)[queryHits(tmp)], uniqueTiles[subjectHits(tmp)])
+```
+
+这里的 `x` 是：
+
+- tile 到“核心 geneRegion”的距离
+- 如果 tile 和核心 geneRegion 重叠，`distance = 0`
+
+然后再给它加方向：
+
+```r
+signDist <- sign(tile_start - TSS_start)
+signDist[minus_strand] <- signDist[minus_strand] * -1
+x <- x * signDist
+```
+
+所以：
+
+- `x` 是带方向的距离
+- 但默认模型里用了 `abs(x)`
+
+```r
+exp(-abs(x)/5000) + exp(-1)
+```
+
+因此默认 ArchR 模型实际上是：
+
+- 只按距离绝对值衰减
+- 不区分上游还是下游谁更强
+
+# 6. 权重函数本身长什么样
+
+默认权重函数是：
+
+```r
+w(x) = exp(-abs(x)/5000) + exp(-1)
+```
+
+这意味着：
+
+- 当 `x = 0`
+  - 权重最大
+  - `1 + exp(-1)`
+- 距离越远
+  - `exp(-abs(x)/5000)` 逐渐变小
+- 但还有一个常数底座 `exp(-1)`
+  - 所以不会衰减到 0
+
+也就是说：
+
+- 近端 tile 权重大
+- 远端 tile 权重小
+- 但在允许范围内，远端 tile 仍然有非零贡献
+
+# 7. gene body / TSS 本体为什么权重大
+
+如果 tile 和核心 geneRegion 重叠：
+
+- `distance = 0`
+- 所以它拿到的是最大衰减权重
+
+此外源码还会再乘一个 `geneWeight`：
+
+```r
+x <- x * mcols(geneRegionz)$geneWeight[queryHits(tmp)]
+```
+
+这个 `geneWeight` 在不同模式下也不一样：
+
+- `useTSS = TRUE`
+  - 直接设成 `geneScaleFactor`
+- `useTSS = FALSE`
+  - 会根据 geneRegion 宽度做缩放
+  - 短基因通常会被赋更高权重
+
+所以最终分数不是只有距离衰减，还包括 gene-level scaling。
+
+# 8. 可以把整个流程理解成三层
+
+最准确的理解是这三层：
+
+1. 核心区域
+   - TSS 或 gene body，再加 `geneUpstream/geneDownstream`
+
+2. 候选搜索范围
+   - 由 `extendUpstream/extendDownstream`
+   - 再加 `useGeneBoundaries` 的相邻基因裁剪
+
+3. 距离衰减赋权
+   - 对候选范围内的 tile，按它到核心区域的距离算权重
+
+所以 `min/max` 主要控制的是：
+
+- 哪些 tile 有资格进入候选集合
+
+而真正决定贡献大小的是：
+
+- `geneModel`
+
+# 9. 关于 `min(extendUpstream/extendDownstream)` 的作用
+
+`min(extendUpstream/extendDownstream)` 定义了“近端必须保留的最小扩展范围”，主要体现在 `useGeneBoundaries = TRUE` 的时候。
+
+此时 ArchR 会根据邻近基因来裁剪每个基因的外延范围，`min` 区域可以保证：
+
+- 上游至少保留 `min` 定义的近端范围
+- 下游至少保留 `min` 定义的近端范围
+
+从而防止邻近基因把本基因的近端调控区挤没。
+
+# 9.1 关于 `gb_up_bp` / `gb_down_bp` 这两个字段名
+
+在当前项目代码中，`gb_up_bp` 和 `gb_down_bp` 这两个字段名并不总是只表示 “gene body upstream/downstream”。
+
+它们在实现上实际上被统一传给 ArchR 的：
+
+- `geneUpstream`
+- `geneDownstream`
+
+因此：
+
+- 在 gene body window 模型里，它们确实表示对 gene body 的上下游扩展
+- 在某些 gene score 模型里，它们表示“核心 geneRegion”的上下游扩展
+- 在 TSS-based extended 模型里，它们也会承载以 TSS 为核心区域的扩展值
+
+所以，从语义上讲：
+
+- `gb_up_bp` 更合适的命名其实应当是 `core_region_up_bp`
+- `gb_down_bp` 更合适的命名其实应当是 `core_region_down_bp`
+
+当前代码中保留 `gb_up_bp` / `gb_down_bp` 只是为了兼容现有 manifest 和下游脚本，并不代表这两个字段只能用于 gene body。
+
+# 10. 最简洁的总结
+
+如果按源码最简洁地说：
+
+- `extendUpstream/extendDownstream` 定义的是候选调控区域的外层范围
+- `geneUpstream/geneDownstream` 定义的是距离为 0 的核心基因区域
+- tile 只要落进候选区域，就会按到核心区域的距离通过 `geneModel` 赋权
+- 因此近端 `1 kb` 不但会被算进去，而且通常权重最高
