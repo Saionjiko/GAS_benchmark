@@ -57,6 +57,9 @@ stopifnot(file.exists(rna_counts_path))
 meth_root <- "/storage2/ruh81/GAS_benchmark/methylation/processed/meth_gas_blocks"
 stopifnot(dir.exists(meth_root))
 
+models_manifest_csv <- file.path(paths$project$root, "models", "models_manifest.csv")
+stopifnot(file.exists(models_manifest_csv))
+
 direction <- "inhibitory"
 k_clust <- 25L
 min_cells_cluster <- 30L
@@ -124,7 +127,7 @@ extract_meth_cell <- function(x) {
 }
 
 apply_direction <- function(meth_mat, direction = c("inhibitory","activating")) {
-  direction <- match.arg(direction)
+  direction <- match.arg(direction, c("inhibitory", "activating", "raw"))
   if (direction == "inhibitory") return(1 - meth_mat)
   meth_mat
 }
@@ -180,6 +183,24 @@ model_dirs <- sort(list.dirs(meth_root, full.names = TRUE, recursive = FALSE))
 model_dirs <- model_dirs[file.info(model_dirs)$isdir]
 model_dirs <- model_dirs[!basename(model_dirs) %in% c("eval_vs_rna")]
 stopifnot(length(model_dirs) >= 1)
+model_manifest <- readr::read_csv(models_manifest_csv, show_col_types = FALSE) %>%
+  dplyr::distinct(name, .keep_all = TRUE)
+
+dir_tbl <- tibble::tibble(
+  model_dir = model_dirs,
+  name = basename(model_dirs)
+)
+
+model_tbl <- dir_tbl %>%
+  dplyr::left_join(model_manifest, by = "name") %>%
+  dplyr::mutate(
+    model_id = ifelse(is.na(model_id), Inf, model_id),
+    score_direction = dplyr::coalesce(score_direction, "inhibitory"),
+    family = dplyr::coalesce(family, "unknown")
+  ) %>%
+  dplyr::arrange(model_id, name)
+
+model_dirs <- model_tbl$model_dir
 cat("[models] N =", length(model_dirs), "\n")
 
 # output path helpers depend on chr
@@ -204,10 +225,11 @@ model_error_path <- function(chr_use, model_dir) file.path(model_out_dir(chr_use
 eval_one_model_cluster_2x2_fast <- function(model_dir, chr_use,
                                             C, common_cells,
                                             rna_pb,
-                                            direction,
+                                            model_info,
                                             HVG2000, DiffGenes1000,
                                             panel_genes) {
   model_name <- basename(model_dir)
+  direction_use <- as.character(model_info$score_direction[[1]])
   chr_dir <- file.path(model_dir, chr_use)
   if (!dir.exists(chr_dir)) stop("chr_dir missing: ", chr_dir)
   
@@ -233,7 +255,7 @@ eval_one_model_cluster_2x2_fast <- function(model_dir, chr_use,
     }
     
     X <- M[, genes_blk, drop = FALSE]
-    X <- apply_direction(X, direction = direction)
+    X <- apply_direction(X, direction = direction_use)
     
     # aggregate: clusters x genes, transpose => genes x clusters
     Xg <- t(as.matrix(C %*% X))
@@ -272,7 +294,10 @@ eval_one_model_cluster_2x2_fast <- function(model_dir, chr_use,
   dg_grp_S  <- clamp0(col_cor(X_all[dg, , drop=FALSE], Y_all[dg, , drop=FALSE], "spearman"))
   
   summary <- tibble(
+    model_id = as.integer(model_info$model_id[[1]]),
     model = model_name,
+    family = as.character(model_info$family[[1]]),
+    score_direction = direction_use,
     chr = chr_use,
     n_cells = length(common_cells),
     n_clusters = ncol(X_all),
@@ -322,6 +347,7 @@ for (CHR_USE in chrs_assigned) {
   
   for (ii in seq_along(model_dirs)) {
     md <- model_dirs[ii]
+    model_info <- model_tbl[ii, , drop = FALSE]
     done_csv <- model_done_path(CHR_USE, md)
     
     if (file.exists(done_csv)) {
@@ -346,7 +372,7 @@ for (CHR_USE in chrs_assigned) {
         C = C,
         common_cells = common_cells,
         rna_pb = rna_pb,
-        direction = direction,
+        model_info = model_info,
         HVG2000 = HVG2000,
         DiffGenes1000 = DiffGenes1000,
         panel_genes = panel_genes

@@ -1,0 +1,13 @@
+model_id,model,family,score_direction,n_groups,n_var_genes,n_diff_genes,Pearson_DiffGenes_GeneLvl_median,Pearson_DiffGenes_GroupLvl_median,Pearson_VarGenes_GeneLvl_median,Pearson_VarGenes_GroupLvl_median,Rank_Pearson_DiffGenes_GeneLvl_median,Rank_Pearson_DiffGenes_GroupLvl_median,Rank_Pearson_VarGenes_GeneLvl_median,Rank_Pearson_VarGenes_GroupLvl_median
+1001,Tune-Control-Promoter-25kb,promoter_window,inhibitory,500,1903,975,0.3036208035676615,0.1701111484876044,0.10359120238864776,0.13285463303551465,4,2,2,1
+1002,Tune-Control-TSSExpNoBoundary-2,tss_exponential_no_boundary,inhibitory,500,1903,975,0.38223723706059287,0.17075715943380532,0.10964560035039786,0.06900427818090182,3,1,1,2
+1101,Tune-GBExpBoundary1-Baseline,genebody_exponential_boundary,raw,500,1903,975,0,0,0,0.054287724415057616,5,5,5,3
+1102,Tune-GBExpBoundary1-ObservedOnly,genebody_exponential_boundary,raw,500,1903,975,0,0,0,0.03173440532850777,5,5,5,10
+1103,Tune-GBExpBoundary1-ObservedOnly-25kb,genebody_exponential_boundary,raw,500,1903,975,0,0,0,0.03351798249770788,5,5,5,8
+1104,Tune-GBExpBoundary1-ObservedOnly-10kb,genebody_exponential_boundary,raw,500,1903,975,0,0,0,0.03583807234013639,5,5,5,6
+1105,Tune-GBExpBoundary1-Inhibitory-ObservedOnly-25kb,genebody_exponential_boundary,inhibitory,500,1903,975,0.44536608570318376,0.05700952501204917,0.0576632349784651,0,1,4,3,11
+1201,Tune-GBExtExpBoundary1-Baseline,genebody_exponential_extend_boundary,raw,500,1903,975,0,0,0,0.054141295527113185,5,5,5,4
+1202,Tune-GBExtExpBoundary1-ObservedOnly,genebody_exponential_extend_boundary,raw,500,1903,975,0,0,0,0.03317819442444851,5,5,5,9
+1203,Tune-GBExtExpBoundary1-ObservedOnly-25kb,genebody_exponential_extend_boundary,raw,500,1903,975,0,0,0,0.0348631549604954,5,5,5,7
+1204,Tune-GBExtExpBoundary1-ObservedOnly-10kb,genebody_exponential_extend_boundary,raw,500,1903,975,0,0,0,0.037242087305519325,5,5,5,5
+1205,Tune-GBExtExpBoundary1-Inhibitory-ObservedOnly-25kb,genebody_exponential_extend_boundary,inhibitory,500,1903,975,0.4415618942538705,0.05727973136758001,0.05683703124458731,0,2,3,4,11

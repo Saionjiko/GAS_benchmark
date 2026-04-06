@@ -6,8 +6,19 @@
 
 source("scripts/00_setup.R")
 
-CG_DIR        <- paths$upstream$cg_dir      
-ANNOT_RDS     <- paths$upstream$annotation 
+args <- commandArgs(trailingOnly = TRUE)
+chr_arg <- sub("^--chrs=", "", args[grepl("^--chrs=", args)])
+
+parse_chr_set <- function(x) {
+  if (length(x) == 0 || !nzchar(x[1])) return(integer(0))
+  vals <- trimws(strsplit(x[1], ",", fixed = TRUE)[[1]])
+  vals <- vals[nzchar(vals)]
+  vals <- suppressWarnings(as.integer(vals))
+  vals[!is.na(vals) & vals >= 1L & vals <= 22L]
+}
+
+CG_DIR        <- paths$upstream$cg_dir
+ANNOT_RDS     <- paths$upstream$annotation
 OUT_DIR       <- ensure_dir(file.path(paths$methylation$processed, "beta"))
 MANIFEST_RDS  <- file.path(OUT_DIR, "beta_manifest.rds")
 STATS_CSV     <- file.path(OUT_DIR, "beta_build_stats.csv")
@@ -15,7 +26,8 @@ STATS_CSV     <- file.path(OUT_DIR, "beta_build_stats.csv")
 stop_if_missing(CG_DIR, what = "directory")
 stop_if_missing(ANNOT_RDS, what = "file")
 
-CHRS <- 1:22
+CHRS <- parse_chr_set(chr_arg)
+if (length(CHRS) == 0) CHRS <- 1:22
 
 mc_file    <- function(chr) file.path(CG_DIR, sprintf("mc_chr_%d.rds", chr))
 total_file <- function(chr) file.path(CG_DIR, sprintf("total_chr_%d.rds", chr))
@@ -23,31 +35,64 @@ beta_file  <- function(chr) file.path(OUT_DIR, sprintf("beta_chr_%d.rds", chr))
 
 msg("Upstream CG dir: ", CG_DIR)
 msg("Output beta dir: ", OUT_DIR)
+msg("Chromosomes: ", paste(CHRS, collapse = ","))
 
-# ---- Main loop ----
-stats_list <- vector("list", length(CHRS))
-names(stats_list) <- paste0("chr", CHRS)
+stats_list <- list()
+reference_cells <- NULL
 
 for (chr in CHRS) {
   msg("=== Processing chr", chr, " ===")
-  
+
   f_mc <- mc_file(chr)
   f_total <- total_file(chr)
+  out <- beta_file(chr)
   stop_if_missing(c(f_mc, f_total), what = "input rds")
-  
+
+  if (file.exists(out) && isTRUE(file.info(out)$size > 0)) {
+    msg("[skip-existing] ", out)
+    beta_existing <- readRDS(out)
+    if (!inherits(beta_existing, "dgCMatrix")) {
+      stop("Existing beta is not dgCMatrix for chr", chr, ": ", out)
+    }
+
+    cells_chr <- rownames(beta_existing)
+    if (is.null(reference_cells)) {
+      reference_cells <- cells_chr
+    } else if (!identical(reference_cells, cells_chr)) {
+      stop("Cell order mismatch between existing beta file for chr", chr, " and previous chromosomes")
+    }
+
+    stats_list[[paste0("chr", chr)]] <- data.frame(
+      chr = chr,
+      n_cells = nrow(beta_existing),
+      n_positions = ncol(beta_existing),
+      nnzero_mc = NA_integer_,
+      nnzero_total = NA_integer_,
+      nnzero_beta = Matrix::nnzero(beta_existing),
+      n_mc_nonzero = NA_integer_,
+      n_bad_total0_at_mc = NA_integer_,
+      n_bad_mcgttotal = NA_integer_,
+      file_beta = out,
+      stringsAsFactors = FALSE
+    )
+
+    rm(beta_existing)
+    gc(verbose = FALSE)
+    next
+  }
+
   mc <- readRDS(f_mc)
   total <- readRDS(f_total)
-  
+
   if (!inherits(mc, "dgCMatrix")) stop("mc is not dgCMatrix for chr", chr)
   if (!inherits(total, "dgCMatrix")) stop("total is not dgCMatrix for chr", chr)
-  
+
   if (!all(dim(mc) == dim(total))) {
     stop("dim mismatch on chr", chr,
          ": mc=", paste(dim(mc), collapse = "x"),
          " total=", paste(dim(total), collapse = "x"))
   }
-  
-  # Name alignment checks (important for alignment)
+
   if (!is.null(rownames(mc)) && !is.null(rownames(total)) &&
       !identical(rownames(mc), rownames(total))) {
     stop("rownames mismatch on chr", chr)
@@ -56,19 +101,24 @@ for (chr in CHRS) {
       !identical(colnames(mc), colnames(total))) {
     stop("colnames mismatch on chr", chr)
   }
-  
 
-  sm <- Matrix::summary(mc)  
-  
+  cells_chr <- rownames(mc)
+  if (is.null(reference_cells)) {
+    reference_cells <- cells_chr
+  } else if (!identical(reference_cells, cells_chr)) {
+    stop("Cell order mismatch on chr", chr, " relative to previous chromosomes")
+  }
+
+  sm <- Matrix::summary(mc)
+
   n_bad_total0_at_mc <- 0L
   n_bad_mcgttotal <- 0L
-  
+
   if (nrow(sm) == 0L) {
-    beta <- mc  
+    beta <- mc
   } else {
     idx <- cbind(sm$i, sm$j)
     tot_x <- total[idx]
-    
 
     bad0 <- (tot_x == 0)
     n_bad_total0_at_mc <- sum(bad0)
@@ -76,19 +126,19 @@ for (chr in CHRS) {
       stop("chr", chr, ": found ", n_bad_total0_at_mc,
            " entries with mc>0 but total==0. Likely matrix misalignment.")
     }
-    
+
     if (any(tot_x < 0)) {
       stop("chr", chr, ": found total<0 values (invalid).")
     }
-    
+
     bad_gt <- (sm$x > tot_x)
     n_bad_mcgttotal <- sum(bad_gt)
     if (n_bad_mcgttotal > 0) {
       stop("chr", chr, ": found ", n_bad_mcgttotal, " entries with mc>total (invalid).")
     }
-    
+
     beta_x <- sm$x / tot_x
-    
+
     beta <- Matrix::sparseMatrix(
       i = sm$i,
       j = sm$j,
@@ -99,11 +149,10 @@ for (chr in CHRS) {
     )
     beta <- Matrix::drop0(beta)
   }
-  
-  out <- beta_file(chr)
+
   saveRDS(beta, out, compress = "xz")
   msg("Wrote: ", out)
-  
+
   stats_list[[paste0("chr", chr)]] <- data.frame(
     chr = chr,
     n_cells = nrow(mc),
@@ -111,15 +160,13 @@ for (chr in CHRS) {
     nnzero_mc = Matrix::nnzero(mc),
     nnzero_total = Matrix::nnzero(total),
     nnzero_beta = Matrix::nnzero(beta),
-    
     n_mc_nonzero = if (exists("sm")) nrow(sm) else 0L,
-    n_bad_total0_at_mc = n_bad_total0_at_mc,  
-    n_bad_mcgttotal = n_bad_mcgttotal,        
-    
+    n_bad_total0_at_mc = n_bad_total0_at_mc,
+    n_bad_mcgttotal = n_bad_mcgttotal,
     file_beta = out,
     stringsAsFactors = FALSE
   )
-  
+
   rm(mc, total, beta, sm)
   gc(verbose = FALSE)
 }
@@ -127,9 +174,9 @@ for (chr in CHRS) {
 stats_df <- do.call(rbind, stats_list)
 data.table::fwrite(stats_df, STATS_CSV)
 
-
-beta_chr1 <- readRDS(beta_file(1))
-cells <- rownames(beta_chr1)
+if (is.null(reference_cells)) {
+  stop("No beta matrices were found or generated for the selected chromosomes.")
+}
 
 manifest <- list(
   created_at = timestamp(),
@@ -154,8 +201,8 @@ manifest <- list(
     beta_files = setNames(as.list(stats_df$file_beta), paste0("chr", stats_df$chr))
   ),
   dims = list(
-    n_cells = length(cells),
-    cells = cells,
+    n_cells = length(reference_cells),
+    cells = reference_cells,
     chrs = paste0("chr", CHRS)
   )
 )

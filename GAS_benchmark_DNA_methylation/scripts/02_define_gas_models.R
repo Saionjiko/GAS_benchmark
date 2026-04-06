@@ -8,349 +8,392 @@ suppressPackageStartupMessages({
   library(readr)
 })
 
-ensure_dir <- function(p) { if (!dir.exists(p)) dir.create(p, recursive = TRUE); p }
+`%||%` <- function(a, b) if (!is.null(a)) a else b
+
+ensure_dir <- function(p) {
+  if (!dir.exists(p)) dir.create(p, recursive = TRUE, showWarnings = FALSE)
+  p
+}
 
 make_meth_model <- function(
+    model_id,
     name,
-    region = c("promoter", "genebody"),
-    width_bp = NULL,                 
-    gb_up_bp = NULL, gb_down_bp = NULL,
-    max_dist_bp = NULL,
-    weight = c("constant", "exp"),
-    decay_bp = NULL,                 
-    boundary = TRUE,                
+    source_model_name,
+    source_rds_name,
+    family,
+    anchor_type = c("tss", "gene_body"),
+    promoter_window_bp = NULL,
+    core_region_up_bp = NULL,
+    core_region_down_bp = NULL,
+    gene_model = NULL,
+    extend_upstream_min_bp = NULL,
+    extend_upstream_max_bp = NULL,
+    extend_downstream_min_bp = NULL,
+    extend_downstream_max_bp = NULL,
+    use_gene_boundaries = NULL,
     missing = c("drop_missing", "impute1_within_feature"),
+    score_direction = c("inhibitory", "raw"),
     notes = NULL
 ) {
-  region <- match.arg(region)
-  weight <- match.arg(weight)
+  anchor_type <- match.arg(anchor_type)
   missing <- match.arg(missing)
-  
-  if (region == "promoter" && is.null(width_bp)) stop("promoter requires width_bp")
-  if (region == "genebody" && (is.null(gb_up_bp) || is.null(gb_down_bp))) {
-    stop("genebody requires gb_up_bp and gb_down_bp")
+  score_direction <- match.arg(score_direction)
+
+  if (!is.null(promoter_window_bp) &&
+      (!identical(anchor_type, "tss") || !is.null(core_region_up_bp) || !is.null(core_region_down_bp))) {
+    stop("promoter_window_bp models should use anchor_type='tss' without core_region_* extensions")
   }
-  if (weight == "exp" && is.null(decay_bp)) stop("exp weight requires decay_bp")
-  
+  if (is.null(promoter_window_bp) && (is.null(core_region_up_bp) || is.null(core_region_down_bp))) {
+    stop("Non-promoter-window models require core_region_up_bp and core_region_down_bp")
+  }
+  if (is.null(gene_model) || !nzchar(gene_model)) stop("gene_model is required")
+  if (isTRUE(use_gene_boundaries) && (
+    is.null(extend_upstream_min_bp) ||
+    is.null(extend_downstream_min_bp) ||
+    is.null(extend_upstream_max_bp) ||
+    is.null(extend_downstream_max_bp)
+  )) {
+    stop("Boundary-aware models require extend_* min/max parameters")
+  }
+
   list(
+    model_id = as.integer(model_id),
     name = name,
-    region = region,
-    width_bp = width_bp,
-    gb_up_bp = gb_up_bp,
-    gb_down_bp = gb_down_bp,
-    max_dist_bp = max_dist_bp,
-    weight = weight,
-    decay_bp = decay_bp,
-    boundary = boundary,
+    source_model_name = source_model_name,
+    source_rds_name = source_rds_name,
+    family = family,
+    anchor_type = anchor_type,
+    promoter_window_bp = promoter_window_bp,
+    core_region_up_bp = core_region_up_bp,
+    core_region_down_bp = core_region_down_bp,
+    gene_model = gene_model,
+    extend_upstream_min_bp = extend_upstream_min_bp,
+    extend_upstream_max_bp = extend_upstream_max_bp,
+    extend_downstream_min_bp = extend_downstream_min_bp,
+    extend_downstream_max_bp = extend_downstream_max_bp,
+    use_gene_boundaries = use_gene_boundaries,
     missing = missing,
+    score_direction = score_direction,
     notes = notes
   )
 }
 
-# ---- family ----
 build_meth_family <- function() {
   models <- list()
-  
-  # ==========================================================================================
-  # 1-6 Promoter constant windows (aligns with ATAC promoter family)
-  # ==========================================================================================
-  for (kb in c(1,2,5,10,25,50)) {
-    nm <- paste0("Meth-Promoter-", kb, "kb-Const-Dir1m-MissImpute1")
-    models[[nm]] <- make_meth_model(
-      name = nm,
-      region = "promoter",
-      boundary = FALSE,
-      width_bp = kb * 2000L,
-      weight = "constant",
-      missing = "impute1_within_feature",     
-      notes = "Promoter methylation inhibitory: score = 1 - mean(beta) within promoter window."
-    )
+
+  add_model <- function(...) {
+    model <- make_meth_model(...)
+    models[[model$name]] <<- model
   }
-  
-  # ==========================================================================================
-  # 16-23 TSS exponential (aligns with TSSExponentialNoGeneBoundary / GeneBoundary)
-  # 4 × NoBoundary + 4 × GeneBoundary
-  # ==========================================================================================
-  decay_list <- c(5000L, 10000L, 25000L, 100000L)
-  
-  for (L in decay_list) {
-    
-    # ---- NoGeneBoundary ----
-    nm0 <- paste0("Meth-TSSExponentialNoGeneBoundary-ExpL", L/1000, "k-Dir1m-MissImpute1")
-    models[[nm0]] <- make_meth_model(
-      name = nm0,
-      region = "promoter",
-      
-      # reference region: TSS point 
-      width_bp = 1L,
-      
-      # contribution support: within ±100kb
-      max_dist_bp = 100000L,
-      
-      weight = "exp",
-      decay_bp = L,
-      boundary = FALSE,
+
+  for (cfg in list(
+    list(id = 1L, kb = 1L),
+    list(id = 2L, kb = 2L),
+    list(id = 3L, kb = 5L),
+    list(id = 4L, kb = 10L),
+    list(id = 5L, kb = 25L),
+    list(id = 6L, kb = 50L)
+  )) {
+    add_model(
+      model_id = cfg$id,
+      name = paste0("Meth-Promoter-", cfg$kb, "kb"),
+      source_model_name = paste0("Promoter_", cfg$kb, "K"),
+      source_rds_name = paste0("Model-Promoter-", cfg$kb, ".rds"),
+      family = "promoter_window",
+      anchor_type = "tss",
+      promoter_window_bp = cfg$kb * 1000L,
+      gene_model = "1",
+      use_gene_boundaries = FALSE,
       missing = "impute1_within_feature",
+      score_direction = "inhibitory",
       notes = paste0(
-        "TSS exponential: reference=TSS(1bp), support=±100kb, decay=", L,
-        ". No gene-boundary assignment; CpGs may contribute to multiple genes if windows overlap."
-      )
-    )
-    
-    # ---- WithGeneBoundary ----
-    nm1 <- paste0("Meth-TSSExponentialGeneBoundary-ExpL", L/1000, "k-Dir1m-MissImpute1")
-    models[[nm1]] <- make_meth_model(
-      name = nm1,
-      region = "promoter",
-      width_bp = 1L,
-      max_dist_bp = 100000L,
-      weight = "exp",
-      decay_bp = L,
-      boundary = TRUE,
-      missing = "impute1_within_feature",
-      notes = paste0(
-        "TSS exponential: reference=TSS(1bp), support=±100kb, decay=", L,
-        ". Gene-boundary-aware assignment."
+        "ArchR promoter-window analogue. Score is built from mean promoter methylation ",
+        "within a ", cfg$kb, " kb total-width TSS-centered window and interpreted as inhibitory."
       )
     )
   }
-  
-  
-  # ==========================================================================================
-  # 7-15 GeneBody extended constant windows (aligns with ATAC GeneBodyExtended)
-  # ==========================================================================================
-  gb_sets <- list(
-    c(0,0), c(1000,0), c(2000,0), c(5000,0),
-    c(1000,1000), c(2000,2000), c(5000,5000),
-    c(10000,0), c(10000,10000)
-  )
-  for (ud in gb_sets) {
-    up <- ud[1]; down <- ud[2]
-    nm <- paste0("Meth-GBExt-", up/1000, "kb-", down/1000, "kb-Const-DirRaw-MissImpute1")
-    models[[nm]] <- make_meth_model(
-      name = nm,
-      region = "genebody",
-      gb_up_bp = up,
-      gb_down_bp = down,
-      weight = "constant",
+
+  for (cfg in list(
+    list(id = 7L, up = 0L, down = 0L),
+    list(id = 8L, up = 1000L, down = 1000L),
+    list(id = 9L, up = 1000L, down = 0L),
+    list(id = 10L, up = 2000L, down = 2000L),
+    list(id = 11L, up = 2000L, down = 0L),
+    list(id = 12L, up = 5000L, down = 5000L),
+    list(id = 13L, up = 5000L, down = 0L),
+    list(id = 14L, up = 10000L, down = 10000L),
+    list(id = 15L, up = 10000L, down = 0L)
+  )) {
+    add_model(
+      model_id = cfg$id,
+      name = paste0("Meth-GeneBody-", cfg$up, "-", cfg$down),
+      source_model_name = paste0("GeneBody_", cfg$up, "_", cfg$down),
+      source_rds_name = paste0("Model-GeneBody-", cfg$up, "_", cfg$down, ".rds"),
+      family = "genebody_window",
+      anchor_type = "gene_body",
+      core_region_up_bp = cfg$up,
+      core_region_down_bp = cfg$down,
+      gene_model = "1",
+      use_gene_boundaries = FALSE,
       missing = "impute1_within_feature",
-      notes = "Gene-body methylation as activity proxy (raw beta)."
+      score_direction = "raw",
+      notes = "ArchR gene-body window analogue using raw methylation aggregation."
     )
   }
-  
-  # ============================================================
-  # GeneBodyExponentialNoGeneBoundary (ArchR models 24-27)
-  # within 100kb of gene body, exp decay, NO gene boundary
-  # ============================================================
-  gb_decay <- c(5000L, 10000L, 25000L, 100000L)
-  for (i in seq_along(gb_decay)) {
-    L <- gb_decay[i]
-    nm <- paste0("Meth-GeneBodyExponentialNoGeneBoundary-", i,
-                 "-ExpL", L/1000, "k-DirRaw-MissImpute1")
-    
-    models[[nm]] <- make_meth_model(
-      name = nm,
-      region = "genebody",
-      gb_up_bp = 0L,
-      gb_down_bp = 0L,
-      weight = "exp",
-      decay_bp = L,
-      max_dist_bp = 100000L,
-      boundary = FALSE,                  # NoGeneBoundary
+
+  for (cfg in list(
+    list(id = 16L, idx = 1L, decay = 5000L),
+    list(id = 17L, idx = 2L, decay = 10000L),
+    list(id = 18L, idx = 3L, decay = 25000L),
+    list(id = 19L, idx = 4L, decay = 100000L)
+  )) {
+    add_model(
+      model_id = cfg$id,
+      name = paste0("Meth-TSSExponentialNoGeneBoundary-", cfg$idx),
+      source_model_name = paste0("GeneModel-TSS-NoBoundary-Exponential-", cfg$idx),
+      source_rds_name = paste0("GeneModel-TSS-Exponential-NoBoundary-", cfg$idx, ".rds"),
+      family = "tss_exponential_no_boundary",
+      anchor_type = "tss",
+      core_region_up_bp = 0L,
+      core_region_down_bp = 0L,
+      gene_model = paste0("exp(-abs(x)/", cfg$decay, ") + exp(-1)"),
+      extend_upstream_min_bp = 1000L,
+      extend_upstream_max_bp = 100000L,
+      extend_downstream_min_bp = 1000L,
+      extend_downstream_max_bp = 100000L,
+      use_gene_boundaries = FALSE,
       missing = "impute1_within_feature",
-      notes = paste0(
-        "GeneBody exponential within +/-100kb of gene body; decay=", L,
-        "; NoGeneBoundary (CpGs may contribute to multiple genes if windows overlap)."
-      )
+      score_direction = "inhibitory",
+      notes = "ArchR TSS exponential no-boundary analogue for methylation."
     )
   }
-  
-  # ============================================================
-  # 28-45 GeneBodyExtendedExponentialGeneBoundary
-  # 6 extension sets × 3 decay groups = 18 models
-  # ============================================================
-  ext_sets <- list(
-    `1kb-0kb`  = c(1000L, 0L),
-    `2kb-0kb`  = c(2000L, 0L),
-    `5kb-0kb`  = c(5000L, 0L),
-    `1kb-1kb`  = c(1000L, 1000L),
-    `2kb-2kb`  = c(2000L, 2000L),
-    `5kb-5kb`  = c(5000L, 5000L)
+
+  for (cfg in list(
+    list(id = 20L, idx = 1L, decay = 5000L),
+    list(id = 21L, idx = 2L, decay = 10000L),
+    list(id = 22L, idx = 3L, decay = 25000L),
+    list(id = 23L, idx = 4L, decay = 100000L)
+  )) {
+    add_model(
+      model_id = cfg$id,
+      name = paste0("Meth-TSSExponentialGeneBoundary-", cfg$idx),
+      source_model_name = paste0("GeneModel-TSS-Exponential-", cfg$idx),
+      source_rds_name = paste0("GeneModel-TSS-Exponential-", cfg$idx, ".rds"),
+      family = "tss_exponential_boundary",
+      anchor_type = "tss",
+      core_region_up_bp = 0L,
+      core_region_down_bp = 0L,
+      gene_model = paste0("exp(-abs(x)/", cfg$decay, ") + exp(-1)"),
+      extend_upstream_min_bp = 1000L,
+      extend_upstream_max_bp = 100000L,
+      extend_downstream_min_bp = 1000L,
+      extend_downstream_max_bp = 100000L,
+      use_gene_boundaries = TRUE,
+      missing = "impute1_within_feature",
+      score_direction = "inhibitory",
+      notes = "ArchR TSS exponential gene-boundary analogue for methylation."
+    )
+  }
+
+  for (cfg in list(
+    list(id = 24L, idx = 1L, decay = 5000L),
+    list(id = 25L, idx = 2L, decay = 10000L),
+    list(id = 26L, idx = 3L, decay = 25000L),
+    list(id = 27L, idx = 4L, decay = 100000L)
+  )) {
+    add_model(
+      model_id = cfg$id,
+      name = paste0("Meth-GeneBodyExponentialNoGeneBoundary-", cfg$idx),
+      source_model_name = paste0("GeneModel-GB-NoBoundary-Exponential-", cfg$idx),
+      source_rds_name = paste0("GeneModel-GB-Exponential-NoBoundary-", cfg$idx, ".rds"),
+      family = "genebody_exponential_no_boundary",
+      anchor_type = "gene_body",
+      core_region_up_bp = 0L,
+      core_region_down_bp = 0L,
+      gene_model = paste0("exp(-abs(x)/", cfg$decay, ") + exp(-1)"),
+      extend_upstream_min_bp = 1000L,
+      extend_upstream_max_bp = 100000L,
+      extend_downstream_min_bp = 1000L,
+      extend_downstream_max_bp = 100000L,
+      use_gene_boundaries = FALSE,
+      missing = "impute1_within_feature",
+      score_direction = "raw",
+      notes = "ArchR gene-body exponential no-boundary analogue for methylation."
+    )
+  }
+
+  extend_sets <- list(
+    c(1000L, 0L), c(2000L, 0L), c(5000L, 0L),
+    c(1000L, 1000L), c(2000L, 2000L), c(5000L, 5000L)
   )
-  
-  decay_groups <- list(
-    `10k` = 10000L,
-    `25k` = 25000L,
-    `5k`  = 5000L
-  )
-  
+  decays <- c(10000L, 25000L, 5000L)
   idx <- 1L
-  for (g in names(decay_groups)) {
-    L <- decay_groups[[g]]
-    
-    for (tag in names(ext_sets)) {
-      up   <- ext_sets[[tag]][1]
-      down <- ext_sets[[tag]][2]
-      
-      nm <- paste0(
-        "Meth-GeneBodyExtendedExponentialGeneBoundary-",
-        tag, "-ExpL", L/1000, "k-DirRaw-MissImpute1"
-      )
-      
-      
-      
-      models[[nm]] <- make_meth_model(
-        name = nm,
-        region = "genebody",
-        gb_up_bp = up,
-        gb_down_bp = down,
-        max_dist_bp = 100000L,
-        weight = "exp",
-        decay_bp = L,
-        boundary = TRUE,                 # GeneBoundary
+  for (decay in decays) {
+    for (pair in extend_sets) {
+      up <- pair[1]
+      down <- pair[2]
+      add_model(
+        model_id = 27L + idx,
+        name = paste0("Meth-GeneBodyExtendedExponentialGeneBoundary-", idx),
+        source_model_name = paste0("GeneModel-GB-Exponential-Extend-", idx),
+        source_rds_name = paste0("GeneModel-GB-Exponential-Extend-", idx, ".rds"),
+        family = "genebody_exponential_extend_boundary",
+        anchor_type = "gene_body",
+        core_region_up_bp = up,
+        core_region_down_bp = down,
+        gene_model = paste0("exp(-abs(x)/", decay, ") + exp(-1)"),
+        extend_upstream_min_bp = 1000L,
+        extend_upstream_max_bp = 100000L,
+        extend_downstream_min_bp = 1000L,
+        extend_downstream_max_bp = 100000L,
+        use_gene_boundaries = TRUE,
         missing = "impute1_within_feature",
-        notes = paste0(
-          "GeneBody extended exponential within +/-100kb of gene body; ",
-          "extend up=", up, "bp; down=", down, "bp; decay=", L,
-          "; GeneBoundary-aware assignment (requires Step2 implementation)."
-        )
+        score_direction = "raw",
+        notes = "ArchR extended gene-body exponential gene-boundary analogue for methylation."
       )
-      
       idx <- idx + 1L
     }
   }
-  
-  # ------------------------------------------------------------
-  # 46–49 GeneBodyExponentialGeneBoundary
-  # ------------------------------------------------------------
-  
-  for (L in c(5000L, 10000L, 25000L, 100000L)) {
-    
-    nm <- paste0(
-      "Meth-GeneBodyExponentialGeneBoundary-ExpL",
-      L/1000, "k-DirRaw-MissImpute1"
-    )
-    
-    models[[nm]] <- make_meth_model(
-      name = nm,
-      region = "genebody",
-      
-      gb_up_bp = 0L,
-      gb_down_bp = 0L,
-      
-      max_dist_bp = 100000L,
-      
-      weight = "exp",
-      decay_bp = L,
-      
-      boundary = TRUE,
+
+  for (cfg in list(
+    list(id = 46L, idx = 1L, decay = 5000L),
+    list(id = 47L, idx = 2L, decay = 10000L),
+    list(id = 48L, idx = 3L, decay = 25000L),
+    list(id = 49L, idx = 4L, decay = 100000L)
+  )) {
+    add_model(
+      model_id = cfg$id,
+      name = paste0("Meth-GeneBodyExponentialGeneBoundary-", cfg$idx),
+      source_model_name = paste0("GeneModel-GB-Exponential-", cfg$idx),
+      source_rds_name = paste0("GeneModel-GB-Exponential-", cfg$idx, ".rds"),
+      family = "genebody_exponential_boundary",
+      anchor_type = "gene_body",
+      core_region_up_bp = 0L,
+      core_region_down_bp = 0L,
+      gene_model = paste0("exp(-abs(x)/", cfg$decay, ") + exp(-1)"),
+      extend_upstream_min_bp = 1000L,
+      extend_upstream_max_bp = 100000L,
+      extend_downstream_min_bp = 1000L,
+      extend_downstream_max_bp = 100000L,
+      use_gene_boundaries = TRUE,
       missing = "impute1_within_feature",
-      
+      score_direction = "raw",
+      notes = "ArchR gene-body exponential gene-boundary analogue for methylation."
+    )
+  }
+
+  for (cfg in list(
+    list(id = 50L, idx = 1L, kb = 5L),
+    list(id = 51L, idx = 2L, kb = 10L),
+    list(id = 52L, idx = 3L, kb = 25L),
+    list(id = 53L, idx = 4L, kb = 100L)
+  )) {
+    add_model(
+      model_id = cfg$id,
+      name = paste0("Meth-ConstantGeneBoundary-", cfg$idx),
+      source_model_name = paste0("GeneModel-TSS-Constant-", cfg$idx),
+      source_rds_name = paste0("GeneModel-Constant-", cfg$idx, ".rds"),
+      family = "constant_gene_boundary",
+      anchor_type = "tss",
+      core_region_up_bp = 0L,
+      core_region_down_bp = 0L,
+      gene_model = "1",
+      extend_upstream_min_bp = 1000L,
+      extend_upstream_max_bp = cfg$kb * 1000L,
+      extend_downstream_min_bp = 1000L,
+      extend_downstream_max_bp = cfg$kb * 1000L,
+      use_gene_boundaries = TRUE,
+      missing = "impute1_within_feature",
+      score_direction = "inhibitory",
       notes = paste0(
-        "GeneBody exponential within ±100kb of gene body; ",
-        "decay=", L, "; GeneBoundary-aware."
+        "ArchR constant gene-boundary analogue. Uses a TSS-centered constant model ",
+        "with a maximum extension of ", cfg$kb, " kb on each side and boundary clipping."
       )
     )
   }
-  
-  # ------------------------------------------------------------
-  # 50–53 ConstantGeneBoundary (TSS-centered constant)
-  # ------------------------------------------------------------
-  
-  for (kb in c(5L, 10L, 25L, 100L)) {
-    
-    nm <- paste0(
-      "Meth-ConstantGeneBoundary-",
-      kb, "kb-DirRaw-MissImpute1"
-    )
-    
-    models[[nm]] <- make_meth_model(
-      name = nm,
-      region = "promoter",
-      
-      # TSS-centered total width
-      width_bp = kb * 2000L,
-      
-      weight = "constant",
-      boundary = TRUE,
+
+  for (cfg in list(
+    list(id = 54L, idx = 1L, ext = 1000L),
+    list(id = 55L, idx = 2L, ext = 2000L),
+    list(id = 56L, idx = 3L, ext = 5000L),
+    list(id = 57L, idx = 4L, ext = 10000L)
+  )) {
+    add_model(
+      model_id = cfg$id,
+      name = paste0("Meth-TSSExtendedExponentialGeneBoundary-", cfg$idx),
+      source_model_name = paste0("TSSExtendedExponentialGeneBoundary-", cfg$ext / 1000L, "kb-", cfg$ext / 1000L, "kb"),
+      source_rds_name = "",
+      family = "tss_extended_exponential_boundary",
+      anchor_type = "tss",
+      core_region_up_bp = cfg$ext,
+      core_region_down_bp = cfg$ext,
+      gene_model = "exp(-abs(x)/5000) + exp(-1)",
+      extend_upstream_min_bp = 1000L,
+      extend_upstream_max_bp = 100000L,
+      extend_downstream_min_bp = 1000L,
+      extend_downstream_max_bp = 100000L,
+      use_gene_boundaries = TRUE,
       missing = "impute1_within_feature",
-      
-      notes = paste0(
-        "Constant signal within ", kb,
-        "kb of gene start (TSS-centered); GeneBoundary-aware."
-      )
+      score_direction = "inhibitory",
+      notes = "ArchR TSS-extended exponential gene-boundary analogue for methylation."
     )
   }
-  
-  # ------------------------------------------------------------
-  # 54–57 TSSExtendedExponentialGeneBoundary
-  # ------------------------------------------------------------
-  
-  for (kb in c(1L, 2L, 5L, 10L)) {
-    
-    nm <- paste0(
-      "Meth-TSSExtendedExponentialGeneBoundary-",
-      kb, "kb-ExpL5k-DirRaw-MissImpute1"
-    )
-    
-    models[[nm]] <- make_meth_model(
-      name = nm,
-      region = "promoter",
-      width_bp = 2L * kb * 1000L,
-      max_dist_bp = 100000L,
-      weight = "exp",
-      decay_bp = 5000L,
-      boundary = TRUE,
-      missing = "impute1_within_feature",
-      
-      notes = paste0(
-        "TSS-extended exponential within ±100kb of TSS; ",
-        "extension ±", kb, "kb; decay=5kb; GeneBoundary-aware."
-      )
-    )
-  }
-  
-  models
+
+  models[order(vapply(models, `[[`, integer(1), "model_id"))]
 }
 
 write_models <- function(models, out_root) {
   out_root <- ensure_dir(out_root)
   model_dir <- ensure_dir(file.path(out_root, "Models_meth"))
+  model_rds <- file.path(out_root, "meth_models.rds")
   manifest_csv <- file.path(out_root, "models_manifest.csv")
-  
+
   for (nm in names(models)) {
     saveRDS(models[[nm]], file.path(model_dir, paste0(nm, ".rds")))
   }
-  
-  df <- tibble(
+  saveRDS(models, model_rds)
+
+  manifest <- tibble(
+    model_id = vapply(models, `[[`, integer(1), "model_id"),
     name = names(models),
-    path = file.path(model_dir, paste0(names(models), ".rds"))
+    path = file.path(model_dir, paste0(names(models), ".rds")),
+    source_model_name = vapply(models, `[[`, character(1), "source_model_name"),
+    source_rds_name = vapply(models, `[[`, character(1), "source_rds_name"),
+    family = vapply(models, `[[`, character(1), "family"),
+    anchor_type = vapply(models, `[[`, character(1), "anchor_type"),
+    promoter_window_bp = vapply(models, function(x) x$promoter_window_bp %||% NA_integer_, integer(1)),
+    core_region_up_bp = vapply(models, function(x) x$core_region_up_bp %||% NA_integer_, integer(1)),
+    core_region_down_bp = vapply(models, function(x) x$core_region_down_bp %||% NA_integer_, integer(1)),
+    gene_model = vapply(models, function(x) x$gene_model %||% "", character(1)),
+    extend_upstream_min_bp = vapply(models, function(x) x$extend_upstream_min_bp %||% NA_integer_, integer(1)),
+    extend_upstream_max_bp = vapply(models, function(x) x$extend_upstream_max_bp %||% NA_integer_, integer(1)),
+    extend_downstream_min_bp = vapply(models, function(x) x$extend_downstream_min_bp %||% NA_integer_, integer(1)),
+    extend_downstream_max_bp = vapply(models, function(x) x$extend_downstream_max_bp %||% NA_integer_, integer(1)),
+    use_gene_boundaries = vapply(models, function(x) x$use_gene_boundaries %||% NA, logical(1)),
+    missing = vapply(models, `[[`, character(1), "missing"),
+    score_direction = vapply(models, `[[`, character(1), "score_direction"),
+    notes = vapply(models, function(x) x$notes %||% "", character(1))
   ) %>%
-    rowwise() %>%
-    mutate(
-      region = models[[name]]$region,
-      width_bp = models[[name]]$width_bp %||% NA_integer_,
-      gb_up_bp = models[[name]]$gb_up_bp %||% NA_integer_,
-      gb_down_bp = models[[name]]$gb_down_bp %||% NA_integer_,
-      max_dist_bp = models[[name]]$max_dist_bp %||% NA_integer_,
-      weight = models[[name]]$weight,
-      decay_bp = models[[name]]$decay_bp %||% NA_integer_,
-      boundary = models[[name]]$boundary,
-      missing = models[[name]]$missing,
-      notes = models[[name]]$notes %||% ""
-    ) %>%
-    ungroup()
-  
-  write_csv(df, manifest_csv)
-  invisible(list(n = nrow(df), model_dir = model_dir, manifest_csv = manifest_csv))
+    arrange(model_id)
+
+  write_csv(manifest, manifest_csv, na = "")
+
+  invisible(list(
+    n_models = nrow(manifest),
+    model_dir = model_dir,
+    model_rds = model_rds,
+    manifest_csv = manifest_csv
+  ))
 }
 
-`%||%` <- function(a,b) if (!is.null(a)) a else b
-
-# ---- main ----
 main <- function() {
   models <- build_meth_family()
-  write_models(models, file.path(PROJECT_ROOT, "models"))
+  result <- write_models(models, file.path(PROJECT_ROOT, "models"))
+
+  cat("Defined ", result$n_models, " methylation models aligned to the 57 ArchR families.\n", sep = "")
+  cat("Model directory: ", result$model_dir, "\n", sep = "")
+  cat("Combined RDS: ", result$model_rds, "\n", sep = "")
+  cat("Manifest CSV: ", result$manifest_csv, "\n", sep = "")
 }
 
 if (sys.nframe() == 0) main()

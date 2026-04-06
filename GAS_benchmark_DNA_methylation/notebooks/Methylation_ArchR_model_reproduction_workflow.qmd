@@ -1,0 +1,710 @@
+---
+title: "Methylation ArchR Model Reproduction Workflow"
+format: html
+editor: visual
+---
+
+# 1. 文档目的
+
+这份笔记用于记录我们目前在 `GAS_benchmark_DNA_methylation` 中所做的工作：
+
+- 参考 ArchR 的 gene score model 设计思想
+- 将 paired methylation data 转换为 gene-level score matrix
+- 再与 paired RNA expression 进行对比
+- 计算 correlation，并尝试用接近 ArchR 原论文 Fig.2 的方式比较不同 model family 的表现
+
+这份文档同时记录：
+
+- 当前 workflow 的实现步骤
+- 与 ArchR 原论文 benchmark 的对应关系
+- 当前结果中 gene-body based models 的主要问题
+- 我们已经识别出的可能原因
+- 下一步值得优先尝试的改进方向
+
+# 2. 当前 workflow 的总体思路
+
+目前这条 methylation workflow 的核心目标是：
+
+1. 从单细胞 DNA methylation 原始矩阵出发，得到按染色体分块存储的 beta matrix
+2. 定义一组尽量与 ATAC 侧 ArchR models 对齐的 methylation GAS models
+3. 按这些 models 将 methylation 位点聚合为 gene-level score matrix
+4. 用与 RNA 共享的一组 low-overlap cell aggregates，将 RNA 与 methylation gene score 放到同一个 `gene x group` 坐标系中比较
+5. 按 ArchR 原论文风格计算 4 个 Pearson benchmark tests，并得到 model ranking
+
+# 3. 主要脚本与各自职责
+
+## 3.1 `01_parse_methylation_raw.R`
+
+位置：
+
+- `scripts/01_parse_methylation_raw.R`
+
+职责：
+
+- 读取每条染色体的 `mc_chr_*.rds` 和 `total_chr_*.rds`
+- 计算 beta matrix，即 `beta = mc / total`
+- 输出到：
+  - `processed/beta/beta_chr_*.rds`
+- 生成：
+  - `beta_manifest.rds`
+  - `beta_build_stats.csv`
+
+目前已经做过的整理：
+
+- 文件名从旧的 `01_parse_methylation_raw.R.R` 改为 `01_parse_methylation_raw.R`
+- 增加 `--chrs` 参数
+- 增加 `skip-existing`
+- 增加跨染色体 cell order consistency check
+
+这一步本身不涉及模型定义，只负责提供后续 `03` 所需的 methylation beta 输入矩阵。
+
+## 3.2 `02_define_gas_models.R`
+
+位置：
+
+- `scripts/02_define_gas_models.R`
+
+职责：
+
+- 定义 methylation 侧的 57 个 GAS models
+- 尽量与 ATAC 侧 ArchR models 在 region design 上对齐
+
+当前 manifest 的核心字段包括：
+
+- `anchor_type`
+- `promoter_window_bp`
+- `core_region_up_bp`
+- `core_region_down_bp`
+- `gene_model`
+- `extend_upstream_min_bp`
+- `extend_upstream_max_bp`
+- `extend_downstream_min_bp`
+- `extend_downstream_max_bp`
+- `use_gene_boundaries`
+- `missing`
+- `score_direction`
+
+当前 schema 的关键设计是：
+
+- 对 promoter models，保留 `promoter_window_bp`
+- 对 gene-body / TSS-based gene score models，使用
+  - `core_region_up_bp`
+  - `core_region_down_bp`
+- 用 `extend_*_min_bp / max_bp` 表达 ArchR 风格的 outer candidate range
+- 用 `use_gene_boundaries` 表达是否考虑相邻基因边界裁剪
+
+当前输出包括：
+
+- `models/models_manifest.csv`
+- `models/meth_models.rds`
+- `models/Models_meth/*.rds`
+
+## 3.3 `03_apply_meth_mode.R`
+
+位置：
+
+- `scripts/03_apply_meth_mode.R`
+
+职责：
+
+- 读取 `02` 定义的 models
+- 将 methylation beta 位点聚合为 gene score blocks
+- 输出到：
+  - `/storage2/ruh81/GAS_benchmark/methylation/processed/meth_gas_blocks_archr_aligned_v2`
+
+这一步是真正将 model parameter 落地为 gene-level score matrix 的关键步骤。
+
+主要实现包括：
+
+- 读取新的 model schema，而不是旧字段
+- 根据 `anchor_type` 和 `core_region_*` 构造 core region
+- 根据 `extend_*` 构造 outer candidate range
+- 在 `use_gene_boundaries = TRUE` 时做 boundary-aware clipping
+- 保留 `extend_*_min_bp` 所定义的 minimal proximal range
+- 按 `gene_model` 计算加权聚合
+- 以 block 为单位输出 `.rds`
+
+当前最终输出是：
+
+- 按 model / chr / block 组织的 gene score block files
+- `global_manifest.csv`
+
+这一版 `03` 已经成功完整跑通，且 `global_manifest.csv` 中 `error = 0`。
+
+## 3.4 `04_archr_paper_meth_rna_benchmark.R`
+
+位置：
+
+- `scripts/04_archr_paper_meth_rna_benchmark.R`
+
+职责：
+
+- 使用 paired RNA 与 methylation 数据
+- 构造与 ArchR 论文思路接近的 shared low-overlap aggregates
+- 在共同的 `gene x group` 坐标系下比较 RNA 与 methylation gene score
+- 输出 paper-style benchmark summary
+
+当前正式输出目录为：
+
+- `results/ArchR_paper_meth_rna_benchmark_v2/`
+
+主要输出包括：
+
+- `group_definition.low_overlap.rds`
+- `Save-KNN-Groups-scRNA-Matrix.rds`
+- `model_corr_summary_archr_paper.csv`
+- `model_rank_summary_archr_paper.csv`
+- `test_id_map.csv`
+
+# 4. 当前 benchmark 是如何计算 correlation 的
+
+当前 `04` 的设计尽量贴近 ArchR 原论文的 benchmark 结构：
+
+- 使用 shared low-overlap aggregates
+- RNA 与 methylation gene score 都聚合成 `gene x group` 矩阵
+- 计算 4 个 Pearson tests：
+  1. differential genes, gene-level
+  2. differential genes, group-level
+  3. variable genes, gene-level
+  4. variable genes, group-level
+
+这里与原论文的一个重要差异是：
+
+- 原论文的 scATAC / scRNA linkage 是通过 integration 完成的
+- 当前 methylation 侧因为 RNA 与 methylation 是 paired cells，因此直接用 matched cells 构造 shared groups
+
+因此，我们的实现更准确地说是：
+
+- **在 methylation 数据条件下，尽量贴近 ArchR benchmark structure 的版本**
+
+而不是对原论文 integration path 的逐函数复刻。
+
+# 5. 当前得到的结果现象
+
+在当前 `model_rank_summary_archr_paper.csv` 中，排名靠前的多为：
+
+- `Promoter`
+- `TSSExponentialNoGeneBoundary`
+- `ConstantGeneBoundary`
+- `TSSExtendedExponentialGeneBoundary`
+
+这些 models 大多具有：
+
+- `score_direction = inhibitory`
+
+而系统性排在后面的多为：
+
+- `GeneBodyExponentialGeneBoundary`
+- `GeneBodyExtendedExponentialGeneBoundary`
+
+这些 models 多为：
+
+- `score_direction = raw`
+
+尤其明显的是，一些 gene-body models 在 4 个 tests 中表现接近：
+
+- `0`
+- `0`
+- `0`
+- `~0.05`
+
+这说明它们并不是完全没有信号，而是前三个 benchmark tests 中的相关性被大面积压成了 `0`。
+
+# 6. 我们目前识别出的 gene-body model 问题
+
+## 6.1 直接观察到的现象
+
+以 `Meth-GeneBodyExponentialGeneBoundary-1` 为例，我们额外检查了它的原始相关性分布：
+
+- diff genes, gene-level
+  - raw median: `-0.4782`
+  - clamped: `0.0000`
+  - fraction negative: `0.898`
+- diff genes, group-level
+  - raw median: `-0.0091`
+  - clamped: `0.0000`
+- variable genes, gene-level
+  - raw median: `-0.1081`
+  - clamped: `0.0000`
+- variable genes, group-level
+  - raw median: `0.0543`
+
+这说明：
+
+- 它不是完全没有变化
+- 而是与 RNA 在前三类 tests 中大多呈负相关
+- 在采用 ArchR 风格的 `negative -> 0` 截断后，被系统性压成了 0
+
+## 6.2 分数本身已经接近饱和
+
+同一个 model 的 group-level methylation matrix 还表现出：
+
+- 数值范围约为 `0.9023` 到 `1.0000`
+- 跨 group 的中位标准差约为 `0.001965`
+
+这意味着：
+
+- gene-body derived score 在 group 层面已经非常接近 `1`
+- 动态范围极小
+- 即便存在变化，也很容易在与 RNA 比较时呈现不稳定或反向关系
+
+# 7. 为什么我们认为问题更可能出在当前建模假设，而不是单个代码 bug
+
+## 7.1 当前 `03` 已经成功跑通
+
+目前 `03_apply_meth_mode.R` 的新版输出已经完整成功：
+
+- `global_manifest.csv` 中 `error = 0`
+- 没有残留 `ERROR.log`
+
+因此，当前现象不像是：
+
+- 某个单独 block 文件损坏
+- 某个 family 根本没有被正确计算
+
+## 7.2 问题更像是建模假设与 benchmark 规则的组合偏置
+
+目前最值得注意的组合是：
+
+- `missing = impute1_within_feature`
+- `score_direction = raw`
+- paper-style benchmark 中对 negative correlation 的截断
+
+它们叠加后，对 gene-body family 尤其不友好。
+
+# 8. `missing = impute1_within_feature` 是如何应用的
+
+当前实现里，`impute1_within_feature` 并不是把全基因组缺失位点都设成 `1`，而是：
+
+- 先根据 model 定义一个 feature / candidate region
+- 只在该 region 内考虑 methylation 位点
+- 已观测位点使用真实 beta 值
+- 未观测位点按 `1` 补入 gene score 计算
+
+如果 feature 内所有位点记为 `i = 1, ..., n`，每个位点有权重 `w_i`，则：
+
+- 已观测位点贡献 `beta_i * w_i`
+- 未观测位点贡献 `1 * w_i`
+
+实现上等价于：
+
+```text
+(beta_wsum + (total_wsum - obs_wsum)) / total_wsum
+```
+
+其中：
+
+- `beta_wsum` = 已观测位点的 beta 加权和
+- `obs_wsum` = 已观测位点的权重和
+- `total_wsum` = feature 内全部候选位点的总权重和
+
+# 9. 为什么它对 gene-body based models 的影响更大
+
+主要原因并不只是“gene body”这三个字，而是 feature 的空间尺度和权重分布。
+
+## 9.1 区域更大
+
+gene-body family 通常覆盖：
+
+- gene body 本身
+- 可能的 core-region extension
+- 以及较大的 outer extension
+
+因此：
+
+- 纳入的位点更多
+- 未观测位点也更多
+- 缺失按 `1` 补时，更容易把总体分数往 `1` 拉
+
+## 9.2 权重更容易分布在较大范围内
+
+对 promoter / TSS family 来说：
+
+- feature 更紧凑，或者
+- 即使 outer range 很大，距离衰减也更偏向 TSS 附近
+
+因此远端缺失位点的权重常常较小。  
+相比之下，gene-body family 的有效权重分布更宽，更容易受到 missing rule 的影响。
+
+## 9.3 与 `raw` direction 和 benchmark clamping 叠加
+
+当前很多 gene-body family 设为：
+
+- `score_direction = raw`
+
+这意味着：
+
+- 它们的 methylation score 不做 `1 - score` 转换
+- 更容易与 RNA expression 呈负相关
+
+而当前 benchmark 又遵循 ArchR 风格：
+
+- negative correlation -> `0`
+
+最终导致 gene-body family 在 rank summary 中被系统性打压。
+
+# 10. 我们目前的判断
+
+基于当前结果，我们认为：
+
+- 不能简单断言 gene-body family 的 region design 一定错误
+- 但可以明确说，**当前 methylation-specific scoring assumptions 对 gene-body family 不够友好**
+
+尤其值得怀疑的是：
+
+1. `missing = impute1_within_feature`
+2. `score_direction = raw`
+3. `extend_*_max_bp = 100 kb` 对 methylation 来说可能过大
+
+# 11. 下一步值得优先测试的改进方向
+
+## 11.1 优先改 `missing`
+
+最值得优先测试的是 gene-body family 的 missing strategy，例如：
+
+- `observed_only`
+- `drop_missing`
+
+如果把 gene-body family 从 `impute1_within_feature` 改为 `observed_only` 后结果明显改善，那么说明当前主要问题确实来自 missing imputation。
+
+## 11.2 测试 `score_direction`
+
+应当对部分 gene-body families 额外测试：
+
+- `raw`
+- `inhibitory`，即 `1 - score`
+
+这有助于区分：
+
+- “模型本身没有信号”
+
+和
+
+- “模型与 RNA 呈反向关系，只是在当前 ranking 规则下被压成 0”
+
+## 11.3 缩小 gene-body 模型的范围
+
+目前很多 gene-body models 的 outer extension 为：
+
+- `100 kb`
+
+对 methylation 来说，这可能过大。  
+值得优先测试：
+
+- `25 kb`
+- `10 kb`
+
+以及更局部的 gene-body / near-TSS variants。
+
+## 11.4 先做小规模参数筛选，不要立刻全量重跑 57 个模型
+
+更合理的方式是先挑选：
+
+- 几个表现差的 gene-body models
+- 几个表现好的 promoter / TSS models 作为对照
+
+然后只对这些模型做最小参数筛选实验：
+
+- `missing`
+- `score_direction`
+- `extend_*_max_bp`
+
+待主因更明确后，再决定是否大规模修改整个 methylation model family。
+
+# 12. 当前阶段的结论
+
+目前我们已经成功完成了：
+
+- methylation beta parsing
+- 与 ATAC 对齐的 methylation model schema 定义
+- gene score block 构造
+- paper-style RNA benchmark
+
+但当前 benchmark 结果同时也说明：
+
+- 直接把 ArchR 风格的 model family 和 ArchR 风格的 ranking 规则移植到 methylation 上，并不一定天然合理
+
+尤其是 gene-body based models 暴露出来的问题提示我们：
+
+- **模型设计本身**
+- **methylation missing 值处理**
+- **score direction**
+- **benchmark 中对 negative correlation 的处理**
+
+需要被作为一个整体来重新评估，而不是只盯住某一个参数。
+
+# 13. 从 Luo 2022 得到的额外启发
+
+在进一步阅读 Luo et al., 2022 之后，我们认为这篇文章提供的 biological context 对当前 methylation model 的解释和改进都非常重要。
+
+## 13.1 原文真正强调的是 gene body mCH 与 RNA 的关系
+
+Luo 2022 在正文和 Methods 中反复强调的 methylation feature 并不是 promoter-style activity score，而是：
+
+- `gene body mCH`
+
+并且原文的核心描述是：
+
+- gene body mCH 与 RNA expression 在总体上往往呈负相关
+- 但这种关系是 **gene-specific** 的
+- 并不是所有基因都存在稳定的 mCH-RNA coupling
+
+原文 Figure 3 的主结论之一是：
+
+- 大约 `38%` 的基因存在显著的负相关
+- 大约 `62%` 的基因并没有明显相关，或者相关弱到无法和噪声区分
+
+这意味着：
+
+- gene-body methylation 本身并不是一个“天然适合统一 activity ranking”的信号
+- 其与 RNA 的关系从一开始就是多样的、部分 uncoupled 的
+
+## 13.2 原文使用的是相对简单的 gene-body methylation feature
+
+Luo 2022 在 correlation analysis 中使用的特征是：
+
+- gene body non-CG methylation (`mCH`)
+- 再除以每个细胞的 global mean mCH
+
+也就是说，原文并没有构造一大组复杂的 promoter / TSS / extended exponential methylation families 来和 RNA 比较。  
+这和 ArchR 在 ATAC 上测试大量 gene score models 的思路不一样。
+
+因此，这篇文章本身并不支持一个强假设：
+
+- “ATAC 侧的 ArchR family 越完整地搬到 methylation，结果就会越合理”
+
+相反，它更提示我们：
+
+- methylation 也许需要一套更朴素、更 modality-specific 的 gene score 设计
+
+## 13.3 原文保留 signed correlation，而不是只保留正相关
+
+Luo 2022 对 RNA 与 gene body mCH 的关系使用的是：
+
+- gene-wise Spearman correlation
+
+并且他们明确关心的是：
+
+- **negative correlation**
+
+而我们当前的 paper-style benchmark 为了贴近 ArchR Fig.2，使用的是：
+
+- aggregated Pearson correlation
+- 并把 negative correlation 截为 `0`
+
+这在 ATAC gene activity benchmarking 中是合理的，但对 methylation 尤其是 gene-body mCH 来说，可能会系统性低估一类 biologically meaningful models。
+
+换句话说：
+
+- 对 ATAC 而言，强正相关通常是我们希望看到的
+- 对 methylation 而言，特别是 gene body mCH，显著负相关本身就是信号的一部分
+
+## 13.4 原文也提示了 coupling 并不只由 methylation 决定
+
+Luo 2022 还指出：
+
+- 一部分基因虽然 gene body mCH 跨 cell types 变化明显
+- 但和 RNA 没有明显相关
+
+作者提出这可能与：
+
+- H3K27me3 等其他抑制性表观遗传标记
+
+有关。
+
+这意味着如果某个 gene-body methylation model 在我们当前 benchmark 中表现不好，不一定说明：
+
+- gene-body methylation 完全没有价值
+
+也可能说明：
+
+- 我们试图用单一的 RNA correlation benchmark 去要求它承担过多解释任务
+
+## 13.5 原文实际上区分了 neuronal mCH 与 non-neuronal mCG
+
+在 marker 和 clustering 的 Methods 中，Luo 2022 还明确提到：
+
+- neuronal clusters 主要使用 gene body `mCH`
+- non-neuronal clusters 主要使用 gene body `mCG`
+
+这提示我们：
+
+- methylation feature 的最优设计可能是 cell-class-specific 的
+- 不一定存在一套统一 family 同时适用于所有 cell types
+
+# 14. 基于 Luo 2022 的后续策略
+
+结合当前 benchmark 结果和 Luo 2022 的原文结论，我们认为后续策略应当从“更贴 methylation biology”而不是“更像 ATAC ArchR family”出发。
+
+## 14.1 保留当前 ArchR-aligned workflow 作为对照基线
+
+当前这条 workflow 仍然有价值，因为它回答了一个明确问题：
+
+- 如果尽量把 ArchR ATAC gene score model 设计迁移到 methylation，会发生什么？
+
+这个 baseline 不应删除，因为它是后续改进时的重要比较对象。
+
+## 14.2 优先设计 Luo-inspired 的简单 gene-body models
+
+下一步更值得优先测试的，不是继续增加更复杂的 gene-body exponential family，而是先做几类更贴 Luo 2022 的模型，例如：
+
+- `gene_body_mCH_observed_only`
+- `gene_body_mCH_global_mean_normalized`
+- `gene_body_mCH_local`（只用 gene body，不加超大 outer extension）
+- `gene_body_mCH_local_plus_small_flank`
+
+这些模型的特点应当是：
+
+- feature 更简单
+- biological interpretation 更直接
+- 更贴近 Luo 2022 实际使用的 methylation representation
+
+## 14.3 对 gene-body models 同时保留 signed 和 paper-style 两种 benchmark
+
+由于 Luo 2022 本身强调 negative correlation 的意义，因此后续对 gene-body models 的评价不应只看：
+
+- ArchR-style `negative -> 0` ranking
+
+更合理的是同时输出：
+
+- `paper-style`：用于和 ArchR heatmap 结构对照
+- `signed`：保留原始相关方向
+
+这样可以区分：
+
+- “这个模型真的没有信号”
+
+和
+
+- “这个模型是负相关，但在 ArchR-style 评分里被压掉了”
+
+## 14.4 优先重新评估 missing strategy
+
+结合当前结果和 Luo 2022 的 biological framing，我们认为 gene-body models 最值得优先测试的改动是：
+
+- 将 `missing = impute1_within_feature` 改为更保守的策略
+
+优先级最高的候选是：
+
+- `observed_only`
+
+因为对 gene-body methylation 来说，过度把 feature 内未观测位点补为 `1`，会非常容易把分数推向饱和，从而削弱真正有信息的 cell-type variation。
+
+## 14.5 不再默认所有 methylation family 都和 RNA 正向对齐
+
+Luo 2022 的一个核心启发是：
+
+- methylation 与 RNA 的关系不应默认按“越像 activity score 越好”来理解
+
+因此后续模型设计里，应当更明确地区分：
+
+- 哪些 family 是为了构造“activity-like transformed score”
+- 哪些 family 是为了保留“原始 methylation signal 与 RNA 的耦合/解耦信息”
+
+这会影响：
+
+- `score_direction`
+- benchmark interpretation
+- heatmap 排名逻辑
+
+# 15. 当前的工作假设
+
+基于目前所有结果，我们更倾向于以下工作假设：
+
+1. 当前 gene-body families 在 ArchR-style benchmark 中表现差，并不意味着 gene-body methylation 不重要
+2. 当前问题更可能来自：
+   - `impute1_within_feature`
+   - `raw` direction 与 ArchR-style clamping 的组合
+   - 过大的 feature 范围
+3. Luo 2022 提示我们更合理的方向是：
+   - 先测试更简单、更局部、更接近 gene body mCH 原始定义的模型
+   - 再决定是否值得保留复杂的 ArchR-style methylation family
+
+# 16. gene-body 参数筛选实验的当前结果
+
+我们进一步构建了一个小规模 tuning 实验，专门测试 gene-body family 的关键参数，而不直接重跑全部 57 个 models。
+
+实验包括：
+
+- 2 个对照模型
+  - `Tune-Control-Promoter-25kb`
+  - `Tune-Control-TSSExpNoBoundary-2`
+- 2 个 gene-body archetypes
+  - `GeneBodyExponentialGeneBoundary-1`
+  - `GeneBodyExtendedExponentialGeneBoundary-1`
+- 主要测试 3 类改动
+  - `missing = observed_only`
+  - `extend_*_max_bp = 25kb / 10kb`
+  - `score_direction = inhibitory`
+
+## 16.1 当前最明确的发现
+
+这轮实验最清楚的结论是：
+
+- 单独把 `missing` 从 `impute1_within_feature` 改为 `observed_only`，改善有限
+- 单独把 `extend_*_max_bp` 从 `100 kb` 缩到 `25 kb` 或 `10 kb`，改善也有限
+- **最有效的改动是把 gene-body family 的 `score_direction` 从 `raw` 改成更接近 `inhibitory`**
+
+换句话说，当前 gene-body models 在 paper-style benchmark 中表现差，主因更像是：
+
+- gene-body methylation 与 RNA 的主导关系是反向的
+- 但 benchmark 结构默认把“越正相关越好”当作高分
+
+## 16.2 为什么 `DiffGenes_GeneLvl` 会明显升高，而其他 tests 仍然偏低
+
+在 tuning 结果中，某些 gene-body variants 可以把：
+
+- `DiffGenes_GeneLvl`
+
+提升到大约 `0.44`，而另外三个 tests 仍然多在：
+
+- `0.05`
+
+左右。
+
+这说明当前 gene-body score 更擅长捕捉的是：
+
+- **同一个基因在不同 cell groups 之间的变化趋势**
+
+而不擅长：
+
+- **同一个 group 内不同基因之间的相对高低排序**
+
+更具体地说：
+
+1. `DiffGenes_GeneLvl` 使用的是 marker-like genes  
+   这些基因本来就更容易呈现 clear group-to-group variation。一旦方向调对，gene-body methylation 就更容易恢复出这种 across-group trend。
+
+2. `GroupLvl` tests 本质上是跨基因比较  
+   这要求不同基因之间的 methylation score 在同一个 group 中也具有可比性。对于 gene-body methylation 来说，这通常更困难，因为不同基因有不同的长度、coverage、baseline methylation 和缺失模式。
+
+3. `VarGenes` 集合中混入了更多并不真正 methylation-coupled 的基因  
+   因此即使方向调整正确，`VarGenes_GeneLvl` 和 `VarGenes_GroupLvl` 也未必会同步显著提升。
+
+因此，当前 tuning 的结果更支持这样一种解释：
+
+- gene-body methylation 更像是一个 **per-gene, across-groups** 的 regulatory signal
+- 它并不天然适合作为一个“跨基因可比的 activity score”来使用
+
+这一点与 Luo 2022 的原文结论是相符的：gene body mCH 与 RNA 的关系是 gene-specific 的，且大量基因本来就并不 tightly coupled。
+
+# 17. 当前对 `score_direction` 的工程判断
+
+目前我们的实现中，`score_direction` 并不在 `03_apply_meth_mode.R` 阶段改变 block 文件本身的数值。
+
+当前逻辑是：
+
+- `03` 输出的 block `.rds` 仍然是原始 methylation-derived score
+- `04_archr_paper_meth_rna_benchmark.R` 在聚合到 `gene x group` 后，才根据 `score_direction` 决定是否做：
+  - `1 - score`
+
+这意味着：
+
+- **如果只改 `score_direction`，理论上不需要重跑 `03`**
+- 只需要在 benchmark 阶段重新指定 model manifest，并重新跑 `04`
+
+因此，`score_direction` 是目前最适合优先测试的参数之一，因为：
+
+- 改动成本低
+- 不需要重算 methylation block matrix
+- 能快速回答 direction 是否是 gene-body family 当前表现差的主因
