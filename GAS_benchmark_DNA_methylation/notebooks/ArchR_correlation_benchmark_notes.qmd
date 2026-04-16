@@ -223,7 +223,7 @@ Supplementary information 描述了两类 matrix 的处理：
 
 基于上面的结论，我在 `GAS_benchmark_DNA_methylation/scripts/` 下新写了一支脚本：
 
-- `04_archr_paper_meth_rna_benchmark.R`
+- `04_meth_rna_benchmark.R`
 
 这支脚本的目标不是沿用当前 methylation workflow 中偏自由的 correlation/heatmap 设计，而是尽量回到 ArchR 原论文的 comparison design。
 
@@ -327,7 +327,7 @@ Supplementary information 描述了两类 matrix 的处理：
 
 输出目录是：
 
-- `results/ArchR_paper_meth_rna_benchmark_v2/`
+- `results/benchmark/`
 
 主要文件包括：
 
@@ -348,7 +348,7 @@ Supplementary information 描述了两类 matrix 的处理：
 
 ### 8.1 当前 paper-style 方法和旧 `scripts/04/05` 的具体差异
 
-如果把当前方法定义为 `04_archr_paper_meth_rna_benchmark.R`，它和旧 methylation 比对流程的差异可以再细分为以下几类：
+如果把当前方法定义为 `04_meth_rna_benchmark.R`，它和旧 methylation 比对流程的差异可以再细分为以下几类：
 
 - 当前方法先在 matched cells 上构造 `500` 个 low-overlap groups，每组 `100` 个细胞，再把 RNA 和 methylation score 聚合到同一套 groups 上比较。
 - 旧方法更多是依赖 RNA cluster labels、RNA pseudobulk cache，以及按 chromosome 拆分的 worker 流程来做比较。
