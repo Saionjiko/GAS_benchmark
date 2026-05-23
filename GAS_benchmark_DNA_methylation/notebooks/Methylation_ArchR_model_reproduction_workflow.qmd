@@ -1,8 +1,12 @@
 ---
 title: "Methylation ArchR Model Reproduction Workflow"
-format: html
 toc: true
 editor: visual
+format:
+    html:
+        toc: true
+        toc-depth: 3
+        embed-resources: true
 ---
 
 # 1. 文档目的
@@ -21,6 +25,7 @@ editor: visual
 -   当前结果中 gene-body based models 的主要问题
 -   我们已经识别出的可能原因
 -   下一步值得优先尝试的改进方向
+-   当前 single-cell benchmark 分支的设计与初步结果
 
 # 2. 当前 workflow 的总体思路
 
@@ -31,6 +36,11 @@ editor: visual
 3.  按这些 models 将 methylation 位点聚合为 gene-level score matrix
 4.  用与 RNA 共享的一组 low-overlap cell aggregates，将 RNA 与 methylation gene score 放到同一个 `gene x group` 坐标系中比较
 5.  按 ArchR 原论文风格计算 4 个 Pearson benchmark tests，并得到 model ranking
+
+补充说明：
+
+-   上面这条 workflow 仍然是当前仓库中的**正式 baseline 实现**
+-   我们已经开始尝试转向 **matched single-cell benchmark** 作为试验性的方向
 
 # 3. 主要脚本与各自职责
 
@@ -100,11 +110,11 @@ editor: visual
 -   `models/meth_models.rds`
 -   `models/Models_meth/*.rds`
 
-## 3.3 `03_apply_meth_mode.R`
+## 3.3 `03_score_methylation_models.R`
 
 位置：
 
--   `scripts/03_apply_meth_mode.R`
+-   `scripts/03_score_methylation_models.R`
 
 职责：
 
@@ -130,7 +140,17 @@ editor: visual
 -   按 model / chr / block 组织的 gene score block files
 -   `global_manifest.csv`
 
-这一版 `03` 已经成功完整跑通，且 `global_manifest.csv` 中 `error = 0`。
+这一版 `03` 已经成功完整跑通。当前 `global_manifest.csv` 的关键状态字段包括：
+
+-   `exists`
+-   `status`
+-   `error_message`
+
+也就是说，现在判断 `03` 是否成功，应该优先看：
+
+-   `status == "ok"`
+-   `exists == TRUE`
+-   `error_message` 是否为空
 
 ## 3.4 `04_meth_rna_benchmark.R`
 
@@ -156,6 +176,27 @@ editor: visual
 -   `model_corr_summary_archr_paper.csv`
 -   `model_rank_summary_archr_paper.csv`
 -   `test_id_map.csv`
+
+## 3.5 `single_cell_benchmark_v1`
+
+位置：
+
+-   `scripts/experiments/single_cell_benchmark_v1/01_run_single_cell_benchmark.R`
+-   `scripts/experiments/single_cell_benchmark_v1/README.md`
+
+职责：
+
+-   直接在 matched single cells 上比较 RNA 与 methylation-derived gene scores
+-   不再先构造 100-cell low-overlap groups
+-   在尽量复用正式 `04` 的 RNA preprocessing 和 gene panels 的前提下，检验：
+    -   single-cell benchmark 是否会带来更强的 RNA-methylation 一致性
+
+当前输出包括：
+
+-   `model_corr_summary_single_cell.csv`
+-   `model_rank_summary_single_cell.csv`
+-   `correlation_distributions_single_cell.csv`
+-   `comparison_vs_group_benchmark.csv`
 
 # 4. 当前 benchmark 是如何计算 correlation 的
 
@@ -395,14 +436,14 @@ cor_one_model_archr_paper <- function(mx, genes, matRNA) {
   mx <- mx[genes, , drop = FALSE]
   mz <- matRNA[genes, , drop = FALSE]
 
-  cor_gene <- clamp0(row_cor_pearson(mx, mz))
-  cor_group <- clamp0(col_cor_pearson(mx, mz))
+  cor_gene <- row_cor_pearson(mx, mz)
+  cor_group <- col_cor_pearson(mx, mz)
 
   list(
     gene_cor = cor_gene,
     group_cor = cor_group,
-    gene_median = stats::median(cor_gene),
-    group_median = stats::median(cor_group)
+    gene_median = stats::median(cor_gene, na.rm = TRUE),
+    group_median = stats::median(cor_group, na.rm = TRUE)
   )
 }
 ```
@@ -412,8 +453,8 @@ cor_one_model_archr_paper <- function(mx, genes, matRNA) {
 1.  先只保留当前 test 对应的基因集合 `genes`
 2.  `row_cor_pearson(mx, mz)` 计算 gene-level correlations
 3.  `col_cor_pearson(mx, mz)` 计算 group-level correlations
-4.  `clamp0()` 把负相关截断为 `0`
-5.  对相关性向量取中位数，作为这个 model 在该 test 上的最终分数
+4.  保留 signed correlation，不再把负相关截断为 `0`
+5.  对相关性向量取中位数，作为这个 model 在该 test 上的最终分数；`NA` correlation 不参与 median summary
 
 ## 4.4 为什么最终保存的是 median
 
@@ -475,33 +516,15 @@ geneC  1.1  1.5  6.7  7.0
 
 最后再分别对这些 Pearson 值取 median。
 
-## 4.6 当前项目里这 4 个 tests 的一个关键偏置
+## 4.6 当前项目里这 4 个 tests 的方向解释
 
-当前实现中有一行很关键：
+当前实现已经改为保留 signed Pearson correlation：
 
-``` r
-clamp0 <- function(v) {
-  v[is.na(v)] <- 0
-  v[v < 0] <- 0
-  v
-}
-```
+-   如果某个 gene 或某个 group 的 methylation-RNA 相关性是负的，它会以负分保留下来
+-   `NA` correlation 不参与 median summary
+-   因此 model ranking 不再只衡量“正向一致性”，也会受到负相关信号影响
 
-这意味着：
-
--   如果某个 gene 或某个 group 的 methylation-RNA 相关性是负的
--   它不会以负分保留下来
--   而是直接被压成 `0`
-
-所以当前 4 个 tests 更准确地说是在衡量：
-
--   **“正向一致性有多强”**
-
-而不是衡量：
-
--   **“signed correlation 有多强”**
-
-这也是为什么 gene-body models 在当前 benchmark 中，即使有明显 biological signal，也可能因为大量负相关而被系统性压低。
+这对 gene-body models 尤其重要，因为 gene-body methylation 与 RNA expression 可能本来就呈负相关。
 
 # 5. 当前得到的结果现象
 
@@ -557,7 +580,7 @@ clamp0 <- function(v) {
 
 -   它不是完全没有变化
 -   而是与 RNA 在前三类 tests 中大多呈负相关
--   在采用 ArchR 风格的 `negative -> 0` 截断后，被系统性压成了 0
+-   在旧的 ArchR 风格 `negative -> 0` 截断下会被系统性压成 0；当前 signed benchmark 中这类负相关会被保留下来
 
 ## 6.2 分数本身已经接近饱和
 
@@ -576,10 +599,11 @@ clamp0 <- function(v) {
 
 ## 7.1 当前 `03` 已经成功跑通
 
-目前 `03_apply_meth_mode.R` 的新版输出已经完整成功：
+目前 `03_score_methylation_models.R` 的新版输出已经完整成功：
 
--   `global_manifest.csv` 中 `error = 0`
--   没有残留 `ERROR.log`
+-   `global_manifest.csv` 中，主输出记录的 `status` 为 `ok`
+-   对应 block 文件 `exists = TRUE`
+-   没有系统性残留错误需要清理
 
 因此，当前现象不像是：
 
@@ -902,19 +926,7 @@ Luo 2022 还指出：
 
 -   “这个模型是负相关，但在 ArchR-style 评分里被压掉了”
 
-## 14.4 优先重新评估 missing strategy
-
-结合当前结果和 Luo 2022 的 biological framing，我们认为 gene-body models 最值得优先测试的改动是：
-
--   将 `missing = impute1_within_feature` 改为更保守的策略
-
-优先级最高的候选是：
-
--   `observed_only`
-
-因为对 gene-body methylation 来说，过度把 feature 内未观测位点补为 `1`，会非常容易把分数推向饱和，从而削弱真正有信息的 cell-type variation。
-
-## 14.5 不再默认所有 methylation family 都和 RNA 正向对齐
+## 14.4 不再默认所有 methylation family 都和 RNA 正向对齐
 
 Luo 2022 的一个核心启发是：
 
@@ -946,7 +958,7 @@ Luo 2022 的一个核心启发是：
 
 # 16. gene-body 参数筛选实验的当前结果
 
-我们进一步构建了一个小规模 tuning 实验，专门测试 gene-body family 的关键参数，而不直接重跑全部 57 个 models。
+我们进一步构建了一个小规模 tuning 实验，专门测试 gene-body family 的关键参数，而不直接重跑全部 57 个 models。这个实验的目的，不是立即重写全部 methylation model family，而是先用一个较小的参数面板判断：当前 gene-body models 表现差，到底更像是 `missing`、feature range，还是 `score_direction` 的问题。
 
 实验包括：
 
@@ -967,12 +979,14 @@ Luo 2022 的一个核心启发是：
 
 -   单独把 `missing` 从 `impute1_within_feature` 改为 `observed_only`，改善有限
 -   单独把 `extend_*_max_bp` 从 `100 kb` 缩到 `25 kb` 或 `10 kb`，改善也有限
--   **最有效的改动是把 gene-body family 的 `score_direction` 从 `raw` 改成更接近 `inhibitory`**
+-   **最有效的改动是把 gene-body family 的 `score_direction` 从 `raw` 改成 `inhibitory`**
 
 换句话说，当前 gene-body models 在 paper-style benchmark 中表现差，主因更像是：
 
 -   gene-body methylation 与 RNA 的主导关系是反向的
 -   但 benchmark 结构默认把“越正相关越好”当作高分
+
+从工程角度看，这个结论也意味着：我们当时优先怀疑的 `missing` 与 outer extension，并不是当前 gene-body family 最主要的限制因素。至少在这轮 tuning 里，单独修改这两类参数，并不能把 gene-body models 从接近全零的状态中系统性救回来；真正能明显改变 benchmark 结果分布的是 `score_direction`。
 
 ## 16.2 为什么 `DiffGenes_GeneLvl` 会明显升高，而其他 tests 仍然偏低
 
@@ -1012,14 +1026,16 @@ Luo 2022 的一个核心启发是：
 
 这一点与 Luo 2022 的原文结论是相符的：gene body mCH 与 RNA 的关系是 gene-specific 的，且大量基因本来就并不 tightly coupled。
 
+因此，这轮 tuning 的意义不只是“找到一个更高分的参数”，而是帮助我们识别出：对于 gene-body family，当前 benchmark 中最敏感、最值得优先调整的不是 feature range，而是分数方向的解释方式。
+
 # 17. 当前对 `score_direction` 的工程判断
 
-目前我们的实现中，`score_direction` 并不在 `03_apply_meth_mode.R` 阶段改变 block 文件本身的数值。
+目前我们的实现中，`score_direction` 并不在 `03` 阶段改变 block 文件本身的数值。
 
 当前逻辑是：
 
 -   `03` 输出的 block `.rds` 仍然是原始 methylation-derived score
--   `04_meth_rna_benchmark.R` 在聚合到 `gene x group` 后，才根据 `score_direction` 决定是否做：
+-   `04_archr_paper_meth_rna_benchmark.R` 在聚合到 `gene x group` 后，才根据 `score_direction` 决定是否做：
     -   `1 - score`
 
 这意味着：
@@ -1027,8 +1043,113 @@ Luo 2022 的一个核心启发是：
 -   **如果只改 `score_direction`，理论上不需要重跑 `03`**
 -   只需要在 benchmark 阶段重新指定 model manifest，并重新跑 `04`
 
-因此，`score_direction` 是目前最适合优先测试的参数之一，因为：
+因此，`score_direction` 当时是最适合优先测试的参数之一，因为：
 
 -   改动成本低
 -   不需要重算 methylation block matrix
 -   能快速回答 direction 是否是 gene-body family 当前表现差的主因
+
+在完成 direction-flip 实验之后，我们已经把这一结论吸收到当前主流程脚本中。也就是说，`scripts/` 目录下当前使用的正式 methylation workflow，已经不再把 `score_direction = inhibitory` 仅仅视为实验性选项；对于我们决定保留的 gene-body families，direction 的调整已经进入主流程代码，而不是停留在 `experiments/` 目录中的临时验证。
+
+因此，这一节现在更适合被理解为：
+
+-   `score_direction` 之所以先被优先测试，是因为它是最容易隔离验证的参数
+-   而验证结果已经反过来影响了当前正式 scripts 的设置
+-   相比之下，`missing` 和 `extend_*_max_bp` 的修改并没有被同样纳入当前主流程
+
+# 18. matched single-cell benchmark 的当前状态
+
+在导师建议之后，我们已经新增并实际运行了 matched single-cell benchmark 分支。
+
+对应实验目录：
+
+-   `scripts/experiments/single_cell_benchmark_v1/`
+
+这个分支的核心改动是：
+
+-   保留与正式 `04` 尽量一致的 RNA preprocessing、`varGenes`、`diffGenes` 与 model manifest
+-   但不再做 low-overlap group aggregation
+-   直接在 matched single cells 上计算：
+    -   gene-wise correlation across cells
+
+# 19. 当前准备尝试的新方向：在 mCH 上复现 workflow
+
+除了当前已经完成的 mCG-based workflow 复现与 benchmark 之外，我们现在还准备尝试把整条 workflow 进一步复现到 `mCH` 上。
+
+这一步的动机主要有两点：
+
+1.  Luo 2022 原文真正重点讨论的是 gene body `mCH` 与 RNA expression 的关系，尤其是在 neuronal cells 中，`mCH-RNA` coupling 比 `mCG-RNA` 更具有解释力。
+2.  当前在 mCG 上复现 ArchR-like model family 的结果已经提示我们：ATAC 风格的 gene score 设计并不能无损迁移到 DNA methylation，因此有必要进一步测试在 `mCH` 上是否会呈现出不同的行为模式。
+
+我们目前计划的 mCH workflow 方向是：
+
+-   从 GSE140493 的 raw methylation files 出发，构建与当前 `/storage2/Data/Luo2022/CG` 对应的 `CH` 位点级中间文件与 chr-split sparse matrices
+-   目标输出格式与 mCG 保持一致：
+    -   `/storage2/Data/Luo2022/CH/mc_chr_*.rds`
+    -   `/storage2/Data/Luo2022/CH/total_chr_*.rds`
+-   尽量复用当前 methylation pipeline 的主流程：
+    -   `01` 解析 raw counts
+    -   `02` 定义 models
+    -   `03` 生成 gene score blocks
+    -   `04` 与 RNA 做 benchmark
+
+在工程实现上，我们当前的计划不是把整个 `GSE140493_RAW.tar` 全量解压，而是：
+
+-   将原始 tar 包保存在 `/storage`
+-   再逐个解包其中的单文件
+-   逐个筛出 `CH`
+-   生成 `/storage2/Data/Luo2022/Intermediate_files/CH/*_indexed_CH.tsv.gz`
+-   然后再像 `CG` 一样合并为 chr-split sparse matrices
+
+也就是说，接下来的新尝试并不是继续在现有 mCG 结果上做小幅调参，而是：
+
+-   **把当前 workflow 迁移并复现到 mCH 上**
+-   再比较 mCH 与 mCG 在同一 benchmark 框架下是否表现出不同的模型敏感性与 RNA correspondence 结构
+    -   cell-wise correlation across genes
+
+## 18.1 为什么要加这条分支
+
+导师的核心意见是：
+
+-   对于 matched data，没有必要一定先做人为聚合
+-   single-cell benchmark 更直接，也更接近真实的 cell-level relationship
+-   这样可以帮助判断：
+    -   当前结果一般，到底是 model family 本身的问题
+    -   还是 group-based benchmark design 把信号冲淡了
+
+## 18.2 当前 single-cell benchmark 的初步结论
+
+这条实验分支已经完成 first-pass 全模型运行，当前结果是：
+
+-   single-cell benchmark **可以跑通**
+-   它确实会改变部分 model family 的排名
+-   但它**没有带来整体 performance 提升**
+
+目前观察到的模式是：
+
+-   gene-level correlation 在 single-cell setting 下明显变弱
+-   `DiffGenes` 的 cell-level axis 有轻微提升
+-   但总体上并没有比当前 strict group-based benchmark 更强
+
+换句话说，目前的判断是：
+
+-   **single-cell 更直接**
+-   **但在当前实现下，并没有更好**
+
+## 18.3 这对当前项目意味着什么
+
+目前项目的工程与实验定位可以这样理解：
+
+-   `04_meth_rna_benchmark.R`
+    -   保留为正式 baseline / reference benchmark
+-   `single_cell_benchmark_v1`
+    -   作为当前优先推进的实验主线
+
+所以从研究推进的角度说：
+
+-   **single-cell benchmark 已经替代 formal group-based benchmark，成为当前主要实验方向**
+
+但从仓库组织与结果可追溯性角度说：
+
+-   formal `04` 仍然保留，不应该删除
+-   因为它是我们当前最重要的 baseline 对照

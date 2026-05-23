@@ -1,0 +1,402 @@
+---
+title: "Research Logbook"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    number-sections: true
+    embed-resources: true
+    code-fold: true
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+```{r}
+options(bitmapType = "cairo")
+library(data.table)
+library(knitr)
+
+PROJECT_ROOT <- "/home/ruh81/projects/GAS_benchmark_DNA_methylation"
+eda_root <- "../results/EDA"
+corr_summary <- fread(file.path(eda_root, "tables", "model_correlation_summary.csv"))
+missing_beta_site_summary <- fread(file.path(eda_root, "tables", "missing_beta_site_value_summary.csv"))
+missing_beta_col_defs <- fread(file.path(eda_root, "tables", "missing_beta_site_value_column_definitions.csv"))
+missing_beta_global_summary <- fread(file.path(eda_root, "tables", "missing_beta_global_observed_mcg_summary.csv"))
+raw_input_overview <- fread(file.path(eda_root, "tables", "raw_input_data_overview.csv"))
+raw_beta_summary <- fread(file.path(eda_root, "tables", "raw_beta_matrix_summary.csv"))
+raw_rna_summary <- fread(file.path(eda_root, "tables", "raw_rna_count_summary.csv"))
+
+fmt_num <- function(x) format(x, big.mark = ",", scientific = FALSE, trim = TRUE)
+fmt_sig <- function(x, digits = 4) {
+  ifelse(is.na(x), NA, format(signif(x, digits), big.mark = ",", scientific = FALSE, trim = TRUE))
+}
+
+```
+
+# Synopsis
+
+This document is intended to summarize the workflow of my current analysis and to highlight the key methodological questions that remain unresolved.
+
+# Loading and Processing the Raw Data
+
+This section summarizes the raw data objects used.
+
+```{r}
+raw_input_overview_display <- copy(raw_input_overview)
+raw_input_overview_display[, rows := fmt_num(rows)]
+raw_input_overview_display[, columns := fmt_num(columns)]
+raw_input_overview_display[, nonzero_values := fmt_num(nonzero_values)]
+raw_input_overview_display[, nonzero_fraction := fmt_sig(nonzero_fraction)]
+
+kable(
+  raw_input_overview_display,
+  caption = "Raw methylation and RNA matrices used for methylation-RNA EDA"
+)
+```
+
+For the DNA methylation beta matrices, each row represents one methylation-profiled cell, and each column represents one genomic cytosine position.
+
+Because the beta matrices are stored separately by chromosome, the column number reported here is the total number of cytosine-position columns summed across autosomes `chr1`--`chr22`. The `nonzero_values` column counts stored non-zero beta entries in these sparse matrices.
+
+For the RNA raw count matrix, each row represents one RNA-profiled cell, and each column represents one gene.
+
+The `nonzero_values` column counts cell-gene entries with raw RNA count greater than zero. Therefore, `nonzero_fraction` represents the fraction of detected cell-gene expression entries for RNA, whereas for DNA methylation it represents the fraction of stored non-zero cell-site beta entries.
+
+
+# Analysis progression
+
+## Model Family
+
+The methylation model family contains 57 models adapted from the ArchR gene-score framework. I grouped them into two major genomic contexts: promoter/TSS-centered models and gene-body-centered models. Within each context, models differ by window definition, distance-decay function, and whether neighboring-gene boundaries are used.
+
+```{r}
+model_family_table <- data.frame(
+  major_context = c(
+    "Promoter / TSS", "Promoter / TSS", "Promoter / TSS",
+    "Promoter / TSS", "Promoter / TSS",
+    "Gene body", "Gene body", "Gene body", "Gene body"
+  ),
+  subfamily = c(
+    "Fixed promoter window",
+    "TSS exponential, no boundary",
+    "TSS exponential, boundary",
+    "TSS constant, boundary",
+    "TSS extended exponential, boundary",
+    "Fixed gene-body window",
+    "Gene-body exponential, no boundary",
+    "Gene-body exponential, boundary",
+    "Gene-body extended exponential, boundary"
+  ),
+  model_ids = c("1-6", "16-19", "20-23", "50-53", "54-57", "7-15", "24-27", "46-49", "28-45"),
+  n_models = c(6, 4, 4, 4, 4, 9, 4, 4, 18),
+  key_design = c(
+    "TSS-centered fixed windows",
+    "Decay from TSS",
+    "Decay from TSS + boundary",
+    "Constant weights + boundary",
+    "Extended TSS core + decay",
+    "Gene body with fixed extension",
+    "Decay from gene body",
+    "Decay + boundary",
+    "Extended core + decay + boundary"
+  )
+)
+
+kable(model_family_table, caption = "Summary of the 57 methylation gene-score models")
+```
+
+All models were stored as .rds objects. Key parameters were later loaded and extracted for downstream analyses. Using the GeneBodyExponentialGeneBoundary model as an example, the extracted model parameters are shown below.
+
+```{r, echo=TRUE}
+model_path <- file.path(
+  PROJECT_ROOT,
+  "models",
+  "Models_meth",
+  "Meth-GeneBodyExponentialGeneBoundary-1.rds"
+)
+
+model <- readRDS(model_path)
+str(model)
+```
+
+## Formula of Aggregation
+
+The next step is to aggregate position-level methylation signals into gene-level score blocks. For each gene $g$ and cell $c$, the model first defines a genomic feature set $\mathcal{F}(g)$, such as a promoter window or a gene-body-centered region. Each methylation site $f$ is then assigned a model-specific weight $w_{g,f}$.
+
+The generic weighted score is:
+
+$$
+G_{g,c}=\sum_{f\in \mathcal{F}(g)} w_{g,f}\cdot x_{f,c}
+$$
+
+Here, $x_{f,c}$ is the site-level methylation beta value for site $f$ in cell $c$, and $w_{g,f}$ encodes the model assumption about how strongly site $f$ contributes to gene $g$. For fixed-window models, all included sites receive constant weight. For exponential models, sites farther from the core region receive lower weight:
+
+$$
+w(x) = \exp\!\left(-\frac{|x|}{d}\right) + \exp(-1)
+$$
+
+where $x$ is the distance from the site to the model-defined core region, and $d$ is the decay scale. The final score also depends on the missing-site rule: in the current main model family, unobserved sites within a feature are treated as beta $=1$.
+
+## Treating Missing Sites Within A Feature As Beta = 1
+I remain uncertain about how missing methylation sites should be handled.
+
+There are two possible strategies. One is to drop missing sites and compute the feature score only from observed methylation sites. However, this can make the score highly dependent on a small number of observed sites, especially in sparse single-cell methylation data. The other strategy is to treat missing sites as beta = 1, which is the strategy currently used in our main scoring workflow.
+
+I first summarized all observed mCG site-cell values in the representative chromosome-level beta matrices. In the sparse beta matrices, observed beta $=0$ values are not stored in the beta matrix but are recovered using the corresponding coverage matrix.
+
+```{r}
+missing_beta_global_display <- copy(missing_beta_global_summary)
+missing_beta_global_display[, observed_site_cell_values := fmt_num(observed_site_cell_values)]
+missing_beta_global_display[, beta_0_fraction := round(beta_0_fraction, 3)]
+missing_beta_global_display[, intermediate_fraction := round(intermediate_fraction, 4)]
+missing_beta_global_display[, beta_1_fraction := round(beta_1_fraction, 3)]
+missing_beta_global_display[, observed_beta_mean := round(observed_beta_mean, 3)]
+missing_beta_global_display <- missing_beta_global_display[, .(
+  chromosome,
+  observed_site_cell_values,
+  beta_0_fraction,
+  intermediate_fraction,
+  beta_1_fraction,
+  observed_beta_mean
+)]
+
+kable(
+  missing_beta_global_display,
+  caption = "Global observed mCG beta composition in representative chromosome-level beta matrices"
+)
+```
+
+This table supports that observed mCG site-cell values in these representative chromosomes are often highly methylated, with a pooled beta $=1$ fraction above 0.8. The concern, however, is that the impact of imputing missing sites as beta $=1$ may still differ across genomic regions.
+
+Therefore, in this section, I examined the observed mCG sites within three representative model-defined feature regions. Specifically, I quantified the proportions of observed sites with beta = 1 and beta = 0, in order to evaluate whether the observed methylation patterns support the assumption that missing sites can reasonably be treated as beta = 1.
+
+I used three representative feature regions: `Promoter_2kb`, `Promoter_5kb`, and `GeneBody_0_0`. The analysis was restricted to representative chromosomes `chr1`, `chr7`, and `chr22`.
+
+If the observed sites inside a feature are already close to beta $=1$, the assumption may be reasonable. If the observed sites are frequently low, imputing missing sites as beta $=1$ can artificially inflate the feature-level methylation score.
+
+For each model and chromosome, up to 100 matched-gene features were sampled. Within each sampled feature, methylation site-cell values were sampled from candidate methylation sites and matched methylation cells, and the observed beta values were summarized.
+
+
+```{r}
+kable(
+  missing_beta_col_defs,
+  caption = "Column definitions for the missing-beta site-cell summary"
+)
+```
+
+```{r}
+missing_beta_site_display <- copy(missing_beta_site_summary)
+missing_beta_site_display[, candidate_matched_features := fmt_num(candidate_matched_features)]
+missing_beta_site_display[, sampled_features := fmt_num(sampled_features)]
+missing_beta_site_display[, sampled_genes := fmt_num(sampled_genes)]
+missing_beta_site_display[, site_cell_values := fmt_num(site_cell_values)]
+missing_beta_site_display[, na_fraction := round(na_fraction, 3)]
+missing_beta_site_display[, `beta=0` := round(`beta=0`, 3)]
+missing_beta_site_display[, `beta=1` := round(`beta=1`, 3)]
+missing_beta_site_display[, measured_beta_mean := round(measured_beta_mean, 3)]
+
+kable(
+  missing_beta_site_display,
+  caption = "Missing beta imputation EDA summary based on sampled feature-level site-cell values"
+)
+```
+
+
+The key difference lies in the distribution of measured beta values.
+
+`GeneBody_0_0` has a high measured mean beta and most measured non-NA values are beta $=1$.
+
+`Promoter_5kb` also leans toward high beta values, although less strongly than gene body.
+
+In contrast, `Promoter_2kb` has a much lower measured beta mean and a larger fraction of measured beta $=0$ values.
+
+![](../results/EDA/05_missing_beta_imputation/observed_beta_density_by_model.png)
+
+This representation makes the central contrast clearer: `Promoter_2kb` contains many more measured beta $=0$ values, whereas `GeneBody_0_0` is dominated by measured beta $=1$ values.
+
+![](../results/EDA/05_missing_beta_imputation/observed_beta_ecdf_by_model.png)
+
+The CDF provides the same conclusion from a cumulative perspective.
+
+What I am truly concerned about is that imputing missing sites as beta = 1 may have different effects across genomic regions.
+
+## Methylation-RNA Signed Correlation
+
+Unlike ATAC accessibility, which is generally expected to show a positive relationship with gene expression, DNA methylation may show either positive or negative associations depending on genomic context. Therefore, I next examined the sign and magnitude of the matched single-cell methylation--RNA correlation.
+
+Here, I simply aim to examine the overall pattern of correlations across all genes. For each gene, I calculated the Spearman correlation across matched cells:
+
+$$
+\rho_g =
+\operatorname{cor}_{\mathrm{Spearman}}
+\left(
+\mathrm{RNA}_{g,\cdot},
+\mathrm{Meth}_{g,\cdot}
+\right)
+$$
+
+Here, $\mathrm{RNA}_{g,\cdot}$ is the expression vector of gene $g$ across matched cells, and $\mathrm{Meth}_{g,\cdot}$ is the corresponding gene-level methylation score. A shuffled control was generated by permuting methylation cell labels before computing the same correlation. This preserves the marginal distribution of each gene but removes the matched-cell pairing between methylation and RNA.
+
+![](../results/EDA/03_correlation/observed_vs_shuffled_density_facets.png)
+
+```{r}
+kable(
+  corr_summary[, .(
+    model_label,
+    n_genes,
+    n_negative,
+    n_positive,
+    median_observed_rho = round(median_observed_rho, 4),
+    median_shuffled_rho = round(median_shuffled_rho, 4),
+    median_n_complete
+  )],
+  caption = "Signed gene-wise methylation-RNA correlation summary"
+)
+```
+
+Across promoter and gene-body features, the observed correlations are shifted slightly toward negative values relative to the shuffled control. However, the median correlations remain close to zero. This suggests two points: first, methylation and RNA expression are more often negatively than positively associated in this dataset; second, the matched single-cell methylation--RNA association is generally weak for most genes.
+
+## Aligning RNA Expression and Methylation Score Matrices
+
+We first aggregate cells into local cell groups.
+
+Each group contains 100 transcriptionally similar cells, defined in RNA PCA space.
+
+The first step is to identify the cells shared by the RNA count matrix and the methylation score matrices.
+
+The RNA matrix contains 4,358 cells, while the methylation score matrices contain 4,314 cells. In practice, the matched set corresponds to all 4,314 methylation cells.
+
+```{r, eval=FALSE, echo=TRUE}
+first_block <- manifest$out_file[[1]]
+M0 <- readRDS(first_block)
+meth_cells <- unique(extract_meth_cell(rownames(M0)))
+
+rna_counts_cells_genes <- read_rna_counts_fread(rna_counts_path)
+
+common_cells <- intersect(rownames(rna_counts_cells_genes), meth_cells)
+```
+
+Therefore, all downstream comparisons are restricted to `common_cells`.
+
+We then process the RNA matrix with Seurat to define variable genes, cluster marker genes, and an RNA PCA embedding. The variable genes and differential genes are used as benchmark gene panels, while the PCA embedding is used to construct local cell groups.
+
+```{r, eval=FALSE, echo=TRUE}
+RNA <- NormalizeData(RNA, verbose = FALSE)
+RNA <- FindVariableFeatures(RNA, nfeatures = 2000, verbose = FALSE)
+RNA <- ScaleData(RNA, features = VariableFeatures(RNA), verbose = FALSE)
+RNA <- RunPCA(RNA, features = VariableFeatures(RNA), npcs = 30, verbose = FALSE)
+RNA <- FindNeighbors(RNA, dims = 1:30, verbose = FALSE)
+RNA <- FindClusters(RNA, resolution = 0.5, verbose = FALSE)
+Idents(RNA) <- RNA$seurat_clusters
+
+markers <- FindAllMarkers(
+  RNA,
+  only.pos = TRUE,
+  min.pct = 0.25,
+  logfc.threshold = 0.25,
+  verbose = FALSE
+)
+```
+
+Using the RNA PCA coordinates, we construct 500 low-overlap groups. Each group contains 100 nearby cells in RNA PCA space. These groups provide a smoother comparison unit than individual cells and reduce sparsity-driven noise.
+
+```{r, eval=FALSE, echo=TRUE}
+emb <- Embeddings(RNA, "pca")[, 1:30, drop = FALSE]
+
+group_obj <- make_low_overlap_groups(
+  emb = emb,
+  group_size = group_size,
+  n_groups = n_groups,
+  max_overlap = max_overlap,
+  seed = seed
+)
+```
+
+The methylation score matrix is then aggregated over the same cell groups. For each gene and each group, the group-level methylation score is the average methylation score among the cells in that group, ignoring non-finite values.
+
+```{r, eval=FALSE}
+M <- readRDS(block_file)
+
+M <- M[common_cells, , drop = FALSE]
+
+sums <- as.matrix(Matrix::crossprod(G_bin, X0))
+nobs <- as.matrix(Matrix::crossprod(G_bin, obs))
+avg <- sums / nobs
+avg[nobs == 0] <- NA_real_
+avg <- t(avg)
+
+```
+
+After this step, both data modalities are represented as matched `genes × groups` matrices. For the same set of genes, two correlation views are computed.
+
+First, gene-level correlation asks whether a given gene's methylation score and RNA expression covary across cell groups. For each gene, Pearson correlation is computed across groups.
+
+Second, group-level correlation asks whether methylation scores and RNA expression are concordant across genes within a given cell group. For each group, Pearson correlation is computed across genes.
+
+Together with the two gene panels, this produces four benchmark tests:
+
+- Test 1: correlation across genes using top differential genes.
+- Test 2: correlation across cell groups using top differential genes.
+- Test 3: correlation across genes using top variable genes.
+- Test 4: correlation across cell groups using top variable genes.
+
+The heatmap below shows the signed median Pearson correlation for each methylation model and benchmark test. The models are ordered by mean signed correlation from more negative to more positive.
+
+![](../results/benchmark_signed_raw_methylation/figures/signed_median_correlation_heatmap.png)
+
+The violin plots show the full signed correlation distributions behind each test. The dashed horizontal line marks zero correlation.
+
+![](../results/benchmark_signed_raw_methylation/figures/methylation_correlation_violin_a_diff_genes_across_genes.png)
+
+![](../results/benchmark_signed_raw_methylation/figures/methylation_correlation_violin_b_diff_genes_across_groups.png)
+
+![](../results/benchmark_signed_raw_methylation/figures/methylation_correlation_violin_c_var_genes_across_genes.png)
+
+![](../results/benchmark_signed_raw_methylation/figures/methylation_correlation_violin_d_var_genes_across_groups.png)
+
+We can see that ATAC-like models do not perform as well on the DNA methylation data. Therefore, I conducted an exploratory analysis to investigate this issue.
+
+# Exploratory Analysis
+
+The key question is why ATAC can produce a model with a reproducible advantage, whereas DNA methylation does not show a similarly universal best model.
+
+The model family is essentially a set of spatial weighting assumptions. Each model assigns different weights to genomic positions around a gene, aggregates the assay signal into a gene-level score, and then tests whether that score reproduces RNA expression. If an assay contains a stable spatial rule around genes, one weighting formula may repeatedly outperform the others.
+
+## ATAC Bottom-Level Tile-Distance Bins
+
+I constructed a bottom-level ATAC distance-bin diagnostic using the PBMC_30k ArchR `TileMatrix`. Instead of comparing final model scores, this analysis uses fixed genomic tiles derived from ATAC fragments.
+
+I sampled 30 existing cell groups, corresponding to 2,809 unique ATAC cells. For each gene, tiles were assigned to independent distance bins relative to the annotated gene body:
+
+- gene body
+- 0--1 kb flanking
+- 1--2 kb flanking
+- 2--5 kb flanking
+- 5--10 kb flanking
+- 10--25 kb flanking
+- 25--50 kb flanking
+- 50--100 kb flanking
+
+For each gene and distance bin, ATAC tile accessibility was averaged across the selected groups and correlated with the matched RNA group expression of the same gene.
+
+![](../results/EDA/07_atac_tile_distance_bins/pbmc3k_atac_tile_distance_bin_correlation.png)
+
+The gene-body bin shows the strongest median ATAC--RNA correlation, whereas flanking bins are positive but weaker. This supports the idea that ATAC accessibility contains a local spatial structure around genes: accessibility within the gene body or immediate regulatory neighborhood is more predictive of RNA expression than more distal accessibility.
+
+## DNA Methylation Site-Distance Bins
+
+I then applied the same distance-bin strategy to the DNA methylation data. For this diagnostic, methylation sites were assigned to the same independent gene-body and flanking bins used in the ATAC analysis. Within each bin, observed methylation beta values were averaged across 30 DNA methylation KNN groups, corresponding to 1,874 unique methylation-profiled cells. Missing site-cell values were ignored in this diagnostic, so the curve reflects the observed methylation signal rather than the `impute1_within_feature` scoring assumption.
+
+For each gene and distance bin, the observed-only methylation beta value was correlated with matched group-level RNA expression of the same gene.
+
+![](../results/EDA/08_methylation_site_distance_bins/meth3k_site_distance_bin_correlation.png)
+
+The methylation curve differs from the ATAC curve in both direction and shape.
+
+The gene-body bin shows the most negative median methylation--RNA correlation, while flanking bins remain weakly negative and do not form the same positive near-gene enrichment pattern seen in ATAC.
+
+Therefore, if the goal is to capture the relationship between RNA expression and DNA methylation, the most important direction may not be to directly benchmark the ATAC-derived model family. DNA methylation sites may follow context-dependent association patterns with RNA expression that differ from ATAC accessibility.
+
+A more appropriate strategy may be to start from the methylation data itself, characterize how methylation sites in different genomic contexts relate to RNA expression, and develop a missing-site handling strategy that better reflects the structure of single-cell methylation data.

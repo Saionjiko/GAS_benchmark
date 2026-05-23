@@ -7,7 +7,7 @@ editor: visual
 
 # 1. Meeting 背景
 
-这份笔记用于整理 2026-04-14 与导师讨论 `GAS_benchmark_DNA_methylation` 项目时的主要反馈、问题重心，以及后续可以直接执行的工作方向。
+这份笔记用于整理 2026-04-14 `GAS_benchmark_DNA_methylation` 项目时的主要反馈、问题重心，以及后续可以直接执行的工作方向。
 
 当前项目的核心问题是：
 
@@ -32,9 +32,6 @@ editor: visual
 
 -   RNA 和 methylation 是 matched cells
 -   因此可以直接在 cell level 进行 comparison
-
-导师的判断是：
-
 -   **single-cell benchmark 可能更 accurate**
 -   当前 group-based benchmark 可能把一些真实信号压弱了
 
@@ -81,13 +78,7 @@ editor: visual
 
 这是当前最优先的技术修改。
 
-也就是：
-
--   不再先把 matched cells 聚成 low-overlap groups
-
-<!-- -->
-
--   而是直接在 matched single cells 上比较 RNA 和 methylation-derived gene scores
+也就是：不再先把 matched cells 聚成 low-overlap group，而是直接在 matched single cells 上比较 RNA 和 methylation-derived gene scores
 
 这个修改的意义在于：
 
@@ -109,7 +100,7 @@ editor: visual
 
 ## 3.3 可以继续探索 methylation-specific model design
 
-导师没有否定继续扩展 model family，而是建议这个扩展要更贴近 methylation biology。
+这个扩展的设计可能需要更贴近 methylation biology。
 
 可以继续考虑的方向包括：
 
@@ -126,10 +117,7 @@ editor: visual
 
 ## 3.4 可以按 tissue / cell type 拆开看
 
-导师提到：
-
--   如果担心 cell type specificity，可以 focus 一个 cell type
--   也可以比较不同 tissue / cell type 下 model ranking 是否变化
+-   如果担心 cell type specificity，可以 focus 一个 cell type，也可以比较不同 tissue / cell type 下 model ranking 是否变化
 
 这说明后续一个有价值的问题是：
 
@@ -139,9 +127,8 @@ editor: visual
 
 ## 3.5 可以考虑 CG / CH / CY / open chromatin 的对照或复现
 
-导师还提到：
+这个 dataset 除了 CG，还有 CH、CY，以及 open chromatin 相关数据
 
--   这个 dataset 除了 CG，还有 CH、CY，以及 open chromatin 相关数据
 -   可以尝试 replicate 原文中的某些图
 -   也可以看看其他 modality 会不会更 stable
 

@@ -6,7 +6,7 @@ editor: visual
 
 # 背景
 
-这份笔记用于梳理 ArchR 原论文中 gene score model benchmark 的 RNA 对比方式，并与我们在 `GAS_benchmark_ATAC` 中对 PBMC_30k 的复现实现进行对照。  
+这份笔记用于梳理 ArchR 原论文中 gene score model benchmark 的 RNA 对比方式，并与我们在 `GAS_benchmark_ATAC` 中对 PBMC_30k 的复现实现进行对照。\
 目的是为 `GAS_benchmark_DNA_methylation` 后续设计更贴近原论文的 correlation benchmark 提供依据。
 
 # 原论文是如何对比 RNA expression 和 gene score 的
@@ -15,14 +15,14 @@ editor: visual
 
 根据 `ArchR.pdf` 正文描述，作者并不是直接把 scATAC 和 scRNA 的单细胞矩阵逐列比较，而是：
 
-- 先用 Seurat 的 canonical correlation analysis / transfer 框架整合同类样本的 `scATAC-seq` 与 `scRNA-seq`
-- 得到 linked gene expression
-- 再把 linked RNA expression 与 scATAC 推断得到的 gene score 进行比较
+-   先用 Seurat 的 canonical correlation analysis / transfer 框架整合同类样本的 `scATAC-seq` 与 `scRNA-seq`
+-   得到 linked gene expression
+-   再把 linked RNA expression 与 scATAC 推断得到的 gene score 进行比较
 
 正文关键描述可以概括为：
 
-- 用 Seurat integration 建立 `scATAC <-> scRNA` 的 linkage
-- 然后比较 linked gene expression 和 inferred gene scores
+-   用 Seurat integration 建立 `scATAC <-> scRNA` 的 linkage
+-   然后比较 linked gene expression 和 inferred gene scores
 
 也就是说，原论文的方法本质上是 **cell-state matching**，不是 barcode matching。
 
@@ -30,27 +30,27 @@ editor: visual
 
 Supplementary information 中写得更明确：
 
-- 为了降低单细胞 ATAC 稀疏性带来的噪音，先构造 low-overlapping aggregates
-- benchmark gene score models 时，作者创建了：
-  - `500` 个 low-overlapping random groupings
-  - 每组 `100` 个细胞
+-   为了降低单细胞 ATAC 稀疏性带来的噪音，先构造 low-overlapping aggregates
+-   benchmark gene score models 时，作者创建了：
+    -   `500` 个 low-overlapping random groupings
+    -   每组 `100` 个细胞
 
 因此，真正进入模型比较的不是原始 `gene x cell` 矩阵，而是：
 
-- RNA: `gene x aggregate`
-- ATAC gene score: `gene x aggregate`
+-   RNA: `gene x aggregate`
+-   ATAC gene score: `gene x aggregate`
 
 ## 3. 对每个 model 都构造 aggregate-level gene score matrix
 
 Supplementary information 描述了两类 matrix 的处理：
 
-- 对每个 gene score model，先得到全 genome 的 gene score matrix
-- 再对 500 个 low-overlapping cell groups 取平均，得到 `gene x group` matrix
+-   对每个 gene score model，先得到全 genome 的 gene score matrix
+-   再对 500 个 low-overlapping cell groups 取平均，得到 `gene x group` matrix
 
 参考实现 `Reference/code/ArchR_Test_Gene_Score_Model_Aggregates.R` 中也对应到：
 
-- `matRNA <- readRDS("Save-KNN-Groups-scRNA-Matrix.rds")`
-- `matList[[x]]` 逐个读取模型的 group-level gene score matrix
+-   `matRNA <- readRDS("Save-KNN-Groups-scRNA-Matrix.rds")`
+-   `matList[[x]]` 逐个读取模型的 group-level gene score matrix
 
 这说明进入 benchmark 的两边对象都已经是 **同一组 shared aggregates 下的 `gene x group` 矩阵**。
 
@@ -58,50 +58,50 @@ Supplementary information 描述了两类 matrix 的处理：
 
 论文正文和 Fig.2 / Extended Data Fig.6 对应的 4 个 test 是：
 
-1. correlation across genes, using top `1,000` differentially expressed genes
-2. correlation across cell groups, using top `1,000` differentially expressed genes
-3. correlation across genes, using top `2,000` variable genes
-4. correlation across cell groups, using top `2,000` variable genes
+1.  correlation across genes, using top `1,000` differentially expressed genes
+2.  correlation across cell groups, using top `1,000` differentially expressed genes
+3.  correlation across genes, using top `2,000` variable genes
+4.  correlation across cell groups, using top `2,000` variable genes
 
 注意这里的关键点：
 
-- 原论文强调的是 **gene-level correlation** 和 **group-level correlation**
-- 不是 Pearson 和 Spearman 各算一套作为四个 test
+-   原论文强调的是 **gene-level correlation** 和 **group-level correlation**
+-   不是 Pearson 和 Spearman 各算一套作为四个 test
 
 ## 5. 参考代码中的具体计算方式
 
 在 `ArchR_Test_Gene_Score_Model_Aggregates.R` 里：
 
-- gene score matrix 先做列归一化，再 `log2(x + 1)`
-- RNA matrix 用的是已经准备好的 aggregate-level RNA matrix
-- 然后分别计算：
+-   gene score matrix 先做列归一化，再 `log2(x + 1)`
+-   RNA matrix 用的是已经准备好的 aggregate-level RNA matrix
+-   然后分别计算：
 
 ### gene-wise correlation
 
 固定一个 gene，比较这个 gene 在所有 aggregates 上：
 
-- gene score 向量
-- RNA expression 向量
+-   gene score 向量
+-   RNA expression 向量
 
 ### group-wise correlation
 
 固定一个 aggregate，比较这个 aggregate 在所有 genes 上：
 
-- gene score 向量
-- RNA expression 向量
+-   gene score 向量
+-   RNA expression 向量
 
 此外，参考代码还做了两个后处理：
 
-- `NA` 相关性设为 `0`
-- 负相关值也截断为 `0`
+-   `NA` 相关性设为 `0`
+-   负相关值也截断为 `0`
 
 ## 6. 原论文最后的 heatmap 用什么统计量
 
 原论文热图本质上是 rank heatmap：
 
-- 每个 model 在 4 个 test 中各有一个 summary score
-- 按这些 summary score 排名
-- 再把 rank 画成 heatmap
+-   每个 model 在 4 个 test 中各有一个 summary score
+-   按这些 summary score 排名
+-   再把 rank 画成 heatmap
 
 因此，原文的 heatmap 不是原始 correlation matrix，而是 **4 个 benchmark tests 的 model rank heatmap**。
 
@@ -111,27 +111,27 @@ Supplementary information 描述了两类 matrix 的处理：
 
 我们当时的实现流程是：
 
-- 在 ArchRProject 上跑 `addGeneIntegrationMatrix()`
-- 把 RNA 信息 transfer 到 ATAC 细胞
-- 在 `IterativeLSI` 空间里构造：
-  - `500` 个 groups
-  - 每组 `100` 个细胞
-  - `max_overlap = 0.8`
-- 把 `GeneIntegrationMatrix` 和每个 gene score matrix 都聚合到同一套 groups 上
+-   在 ArchRProject 上跑 `addGeneIntegrationMatrix()`
+-   把 RNA 信息 transfer 到 ATAC 细胞
+-   在 `IterativeLSI` 空间里构造：
+    -   `500` 个 groups
+    -   每组 `100` 个细胞
+    -   `max_overlap = 0.8`
+-   把 `GeneIntegrationMatrix` 和每个 gene score matrix 都聚合到同一套 groups 上
 
 因此在 `04` 这一步，我们和原论文的总体思想是比较接近的：
 
-- 都先做 RNA-ATAC linkage
-- 都使用 shared low-overlap aggregates
-- 都把比较对象统一到 `gene x group` 层面
+-   都先做 RNA-ATAC linkage
+-   都使用 shared low-overlap aggregates
+-   都把比较对象统一到 `gene x group` 层面
 
 但实现路径有一个差异：
 
-- 原论文描述更偏 Seurat CCA / transfer integration
-- 我们的复现更偏 ArchR 工作流：
-  - `addGeneIntegrationMatrix()`
-  - `IterativeLSI`
-  - shared group aggregation
+-   原论文描述更偏 Seurat CCA / transfer integration
+-   我们的复现更偏 ArchR 工作流：
+    -   `addGeneIntegrationMatrix()`
+    -   `IterativeLSI`
+    -   shared group aggregation
 
 这个差异属于“实现方式不同，但总体设计相近”。
 
@@ -139,33 +139,33 @@ Supplementary information 描述了两类 matrix 的处理：
 
 我们在 `05` 中：
 
-- 使用了 top `2000` variable genes
-- 使用了 top `1000` differential genes
-- 对每个 model 计算了：
-  - gene-level correlation
-  - sample/group-level correlation
+-   使用了 top `2000` variable genes
+-   使用了 top `1000` differential genes
+-   对每个 model 计算了：
+    -   gene-level correlation
+    -   sample/group-level correlation
 
 但后来脚本又额外加入了 Spearman correlation，导致最终用于 rank heatmap 的 4 个 test 变成了：
 
-1. `Pearson_DiffGenes_GeneLvl_median`
-2. `Spearman_DiffGenes_GeneLvl_median`
-3. `Pearson_VarGenes_GeneLvl_median`
-4. `Spearman_VarGenes_GeneLvl_median`
+1.  `Pearson_DiffGenes_GeneLvl_median`
+2.  `Spearman_DiffGenes_GeneLvl_median`
+3.  `Pearson_VarGenes_GeneLvl_median`
+4.  `Spearman_VarGenes_GeneLvl_median`
 
 这和原论文的 4 个 test **并不一致**。
 
 原论文要的是：
 
-1. diff genes across genes
-2. diff genes across groups
-3. variable genes across genes
-4. variable genes across groups
+1.  diff genes across genes
+2.  diff genes across groups
+3.  variable genes across genes
+4.  variable genes across groups
 
 而我们 PBMC_30k 的最终 heatmap 实际上变成了：
 
-- 部分 Pearson
-- 部分 Spearman
-- 而且偏向 gene-level
+-   部分 Pearson
+-   部分 Spearman
+-   而且偏向 gene-level
 
 因此，PBMC_30k 的最终热图风格虽然在视觉上高度接近原论文，但 **benchmark test definition 并没有完全严格复刻原文**。
 
@@ -175,38 +175,38 @@ Supplementary information 描述了两类 matrix 的处理：
 
 如果目标是尽量遵守 ArchR 原论文的方案，那么 methylation 侧后续的 benchmark 不应只是：
 
-- 任意地把 methylation-derived score 和 RNA expression 做相关性
+-   任意地把 methylation-derived score 和 RNA expression 做相关性
 
 而应尽量遵循以下结构：
 
-1. 建立 methylation 与 RNA 的可比较 linkage / shared grouping
-2. 在 shared low-overlapping aggregates 上比较
-3. 使用与原论文一致的 4 个 test：
-   - diff genes across genes
-   - diff genes across groups
-   - variable genes across genes
-   - variable genes across groups
+1.  建立 methylation 与 RNA 的可比较 linkage / shared grouping
+2.  在 shared low-overlapping aggregates 上比较
+3.  使用与原论文一致的 4 个 test：
+    -   diff genes across genes
+    -   diff genes across groups
+    -   variable genes across genes
+    -   variable genes across groups
 
 ## 2. 对 methylation 来说，哪些层面可以直接借鉴 ArchR benchmark
 
 可以直接借鉴的层面：
 
-- shared aggregates 的设计
-- top variable genes / top differential genes 的选择思路
-- gene-level 与 group-level 两类相关性
-- rank heatmap 的展示方式
+-   shared aggregates 的设计
+-   top variable genes / top differential genes 的选择思路
+-   gene-level 与 group-level 两类相关性
+-   rank heatmap 的展示方式
 
 ## 3. 当前最推荐的设计方向
 
 如果我们希望 methylation benchmark 更贴近原论文，那么更合理的 downstream 设计应当是：
 
-- 先得到 methylation-derived `gene x group` matrix
-- 先得到 RNA-derived `gene x group` matrix
-- 再严格按原论文的 4 个 tests 计算：
-  - Pearson across genes for diff genes
-  - Pearson across groups for diff genes
-  - Pearson across genes for variable genes
-  - Pearson across groups for variable genes
+-   先得到 methylation-derived `gene x group` matrix
+-   先得到 RNA-derived `gene x group` matrix
+-   再严格按原论文的 4 个 tests 计算：
+    -   Pearson across genes for diff genes
+    -   Pearson across groups for diff genes
+    -   Pearson across genes for variable genes
+    -   Pearson across groups for variable genes
 
 是否额外保留 Spearman，可以作为扩展分析保留，但不应替代原论文主 heatmap 的 4 个 tests。
 
@@ -214,16 +214,16 @@ Supplementary information 描述了两类 matrix 的处理：
 
 一句话总结：
 
-- 原论文的核心是：**跨模态对齐 + shared low-overlap aggregates + 四个 Pearson benchmark tests**
-- 我们的 PBMC_30k 复现在 aggregate/linkage 层面基本接近原文
-- 但最终 heatmap 使用的 4 个 tests 并没有完全严格按原论文定义
-- 因此，methylation 侧如果要“严格复刻 ArchR benchmark”，应当优先把 **comparison design** 调整回原论文的 4-test 框架
+-   原论文的核心是：**跨模态对齐 + shared low-overlap aggregates + 四个 Pearson benchmark tests**
+-   我们的 PBMC_30k 复现在 aggregate/linkage 层面基本接近原文
+-   但最终 heatmap 使用的 4 个 tests 并没有完全严格按原论文定义
+-   因此，methylation 侧如果要“严格复刻 ArchR benchmark”，应当优先把 **comparison design** 调整回原论文的 4-test 框架
 
 # 新写的 methylation benchmark 脚本思路
 
 基于上面的结论，我在 `GAS_benchmark_DNA_methylation/scripts/` 下新写了一支脚本：
 
-- `04_meth_rna_benchmark.R`
+-   `04_meth_rna_benchmark.R`
 
 这支脚本的目标不是沿用当前 methylation workflow 中偏自由的 correlation/heatmap 设计，而是尽量回到 ArchR 原论文的 comparison design。
 
@@ -231,19 +231,19 @@ Supplementary information 描述了两类 matrix 的处理：
 
 原论文中，scATAC 和 scRNA 来自 matched sample types，但不是同一批 barcode，因此需要：
 
-- Seurat integration
-- transfer anchors
-- linked gene expression
+-   Seurat integration
+-   transfer anchors
+-   linked gene expression
 
 而在我们当前的 methylation 项目里：
 
-- RNA 和 methylation 使用的是 matched cells
-- 两边可以直接通过共有 cell barcodes 对齐
+-   RNA 和 methylation 使用的是 matched cells
+-   两边可以直接通过共有 cell barcodes 对齐
 
 因此，新脚本没有照搬 Seurat transfer 这一步，而是：
 
-- 直接取 RNA 与 methylation 共有的细胞
-- 在这些 shared cells 上建立共同的 low-overlap aggregates
+-   直接取 RNA 与 methylation 共有的细胞
+-   在这些 shared cells 上建立共同的 low-overlap aggregates
 
 这个实现和原论文在 linkage 技术路径上不一样，但在 benchmark 结构上尽量保持一致。
 
@@ -251,57 +251,57 @@ Supplementary information 描述了两类 matrix 的处理：
 
 新脚本采用以下步骤：
 
-1. 读取 RNA raw counts
-2. 读取 methylation gene score blocks（`meth_gas_blocks_archr_aligned_v2`）
-3. 取 RNA 与 methylation 共有细胞
-4. 在 RNA PCA 空间里构造：
-   - `500` 个 low-overlap groups
-   - 每组 `100` 个细胞
-5. 用同一套 groups 分别聚合：
-   - RNA expression
-   - methylation-derived gene score
-6. 对每个 model 计算与原论文一致的 4 个 Pearson tests
+1.  读取 RNA raw counts
+2.  读取 methylation gene score blocks（`meth_gas_blocks_archr_aligned_v2`）
+3.  取 RNA 与 methylation 共有细胞
+4.  在 RNA PCA 空间里构造：
+    -   `500` 个 low-overlap groups
+    -   每组 `100` 个细胞
+5.  用同一套 groups 分别聚合：
+    -   RNA expression
+    -   methylation-derived gene score
+6.  对每个 model 计算与原论文一致的 4 个 Pearson tests
 
 ## 3. shared aggregates 是怎么做的
 
 这支脚本保留了原论文 aggregate benchmark 的关键结构：
 
-- 使用 low-overlap groups
-- 目标是 `500 groups x 100 cells`
-- group 之间 overlap 受 `max_overlap` 约束
+-   使用 low-overlap groups
+-   目标是 `500 groups x 100 cells`
+-   group 之间 overlap 受 `max_overlap` 约束
 
 也就是说，真正比较的不是单细胞矩阵，而是：
 
-- RNA: `gene x group`
-- methylation score: `gene x group`
+-   RNA: `gene x group`
+-   methylation score: `gene x group`
 
 ## 4. RNA matrix 是怎么得到的
 
 在 shared cells 上：
 
-- 先构建 Seurat object
-- 做 `NormalizeData`
-- 做 `FindVariableFeatures`
-- 做 `RunPCA`
-- 用 PCA embedding 构造 groups
+-   先构建 Seurat object
+-   做 `NormalizeData`
+-   做 `FindVariableFeatures`
+-   做 `RunPCA`
+-   用 PCA embedding 构造 groups
 
 然后把 RNA normalized expression 按同一套 groups 取平均，得到：
 
-- `Save-KNN-Groups-scRNA-Matrix.rds`
+-   `Save-KNN-Groups-scRNA-Matrix.rds`
 
 ## 5. methylation score matrix 是怎么得到的
 
 对每个 methylation model：
 
-- 从 `global_manifest.csv` 找到该 model 全部 block 文件
-- 逐块读取 `cells x genes` block matrix
-- 对每个 block 只保留 panel genes
-- 再按同一套 group membership 聚合到 `gene x group`
+-   从 `global_manifest.csv` 找到该 model 全部 block 文件
+-   逐块读取 `cells x genes` block matrix
+-   对每个 block 只保留 panel genes
+-   再按同一套 group membership 聚合到 `gene x group`
 
 其中：
 
-- `score_direction = inhibitory` 的模型会在聚合后转成 `1 - methylation_score`
-- `score_direction = raw` 的模型则保留原值
+-   `score_direction = inhibitory` 的模型会在聚合后转成 `1 - methylation_score`
+-   `score_direction = raw` 的模型则保留原值
 
 因此，这支脚本把 `score_direction` 真正纳入了 RNA 对比前的数据变换。
 
@@ -309,17 +309,17 @@ Supplementary information 描述了两类 matrix 的处理：
 
 新脚本故意只保留和原论文一致的 4 个 Pearson tests：
 
-1. `Pearson_DiffGenes_GeneLvl_median`
-2. `Pearson_DiffGenes_GroupLvl_median`
-3. `Pearson_VarGenes_GeneLvl_median`
-4. `Pearson_VarGenes_GroupLvl_median`
+1.  `Pearson_DiffGenes_GeneLvl_median`
+2.  `Pearson_DiffGenes_GroupLvl_median`
+3.  `Pearson_VarGenes_GeneLvl_median`
+4.  `Pearson_VarGenes_GroupLvl_median`
 
 这里：
 
-- `DiffGenes` 使用 top `1,000` differential genes
-- `VarGenes` 使用 top `2,000` variable genes
-- `GeneLvl` 表示 across genes
-- `GroupLvl` 表示 across groups
+-   `DiffGenes` 使用 top `1,000` differential genes
+-   `VarGenes` 使用 top `2,000` variable genes
+-   `GeneLvl` 表示 across genes
+-   `GroupLvl` 表示 across groups
 
 这和原论文 Fig.2 / Extended Data Fig.6 的 benchmark 定义是一致的。
 
@@ -327,91 +327,91 @@ Supplementary information 描述了两类 matrix 的处理：
 
 输出目录是：
 
-- `results/benchmark/`
+-   `results/benchmark/`
 
 主要文件包括：
 
-- `group_definition.low_overlap.rds`
-- `Save-KNN-Groups-scRNA-Matrix.rds`
-- `model_corr_summary_archr_paper.csv`
-- `model_rank_summary_archr_paper.csv`
-- `test_id_map.csv`
+-   `group_definition.low_overlap.rds`
+-   `Save-KNN-Groups-scRNA-Matrix.rds`
+-   `model_corr_summary_archr_paper.csv`
+-   `model_rank_summary_archr_paper.csv`
+-   `test_id_map.csv`
 
 ## 8. 这支脚本和当前旧 methylation benchmark 的区别
 
 相对于当前旧的 methylation `04/05` 流程，新脚本有几个关键不同：
 
-- 不再把 Spearman 混进原论文的四个主 test
-- 不再用旧的全局 `direction = inhibitory` naming 逻辑来定义 benchmark 结构
-- 明确用 shared low-overlap aggregates 作为共同比较坐标系
-- 明确使用原论文式的 4 个 Pearson benchmark tests
+-   不再把 Spearman 混进原论文的四个主 test
+-   不再用旧的全局 `direction = inhibitory` naming 逻辑来定义 benchmark 结构
+-   明确用 shared low-overlap aggregates 作为共同比较坐标系
+-   明确使用原论文式的 4 个 Pearson benchmark tests
 
 ### 8.1 当前 paper-style 方法和旧 `scripts/04/05` 的具体差异
 
 如果把当前方法定义为 `04_meth_rna_benchmark.R`，它和旧 methylation 比对流程的差异可以再细分为以下几类：
 
-- 当前方法先在 matched cells 上构造 `500` 个 low-overlap groups，每组 `100` 个细胞，再把 RNA 和 methylation score 聚合到同一套 groups 上比较。
-- 旧方法更多是依赖 RNA cluster labels、RNA pseudobulk cache，以及按 chromosome 拆分的 worker 流程来做比较。
-- 当前方法严格保留原论文式的 4 个 Pearson tests：
-  - diff genes across genes
-  - diff genes across groups
-  - variable genes across genes
-  - variable genes across groups
-- 旧方法则额外计算 Spearman，并在旧 heatmap 里实际使用了 `Pearson + Spearman` 的 gene-level 指标组合，而不是原论文那 4 个 Pearson tests。
-- 当前方法的 `score_direction` 是 per-model 生效的，模型级别决定是否对 methylation score 做 `1 - score`。
-- 旧 workflow 虽然后期也能读取 per-model `score_direction`，但整体目录命名和组织仍保留了更强的“全局 inhibitory run”痕迹。
-- 当前方法是全基因整体 benchmark，直接从 block outputs 组装每个模型的完整 `gene x group` 矩阵再比较。
-- 旧方法则是先按 chromosome 计算 summary，再在后续步骤里跨 chromosome 取 median 合并。
+-   当前方法先在 matched cells 上构造 `500` 个 low-overlap groups，每组 `100` 个细胞，再把 RNA 和 methylation score 聚合到同一套 groups 上比较。
+-   旧方法更多是依赖 RNA cluster labels、RNA pseudobulk cache，以及按 chromosome 拆分的 worker 流程来做比较。
+-   当前方法严格保留原论文式的 4 个 Pearson tests：
+    -   diff genes across genes
+    -   diff genes across groups
+    -   variable genes across genes
+    -   variable genes across groups
+-   旧方法则额外计算 Spearman，并在旧 heatmap 里实际使用了 `Pearson + Spearman` 的 gene-level 指标组合，而不是原论文那 4 个 Pearson tests。
+-   当前方法的 `score_direction` 是 per-model 生效的，模型级别决定是否对 methylation score 做 `1 - score`。
+-   旧 workflow 虽然后期也能读取 per-model `score_direction`，但整体目录命名和组织仍保留了更强的“全局 inhibitory run”痕迹。
+-   当前方法是全基因整体 benchmark，直接从 block outputs 组装每个模型的完整 `gene x group` 矩阵再比较。
+-   旧方法则是先按 chromosome 计算 summary，再在后续步骤里跨 chromosome 取 median 合并。
 
 因此，两者的关系更准确地说是：
 
-- 当前方法是一个更贴近 ArchR 原论文 benchmark structure 的全基因 paper-style 实现。
-- 旧方法则更像一个为 methylation 数据探索而设计的扩展版 workflow，包含更多 cache、per-chr worker、Spearman 和旧 heatmap 逻辑。
+-   当前方法是一个更贴近 ArchR 原论文 benchmark structure 的全基因 paper-style 实现。
+-   旧方法则更像一个为 methylation 数据探索而设计的扩展版 workflow，包含更多 cache、per-chr worker、Spearman 和旧 heatmap 逻辑。
 
 ## 9. 目前的边界
 
 尽管这支脚本在 benchmark structure 上更贴近原论文，但仍有一个实现差异需要明确记录：
 
-- 原论文：scATAC 与 scRNA 通过 Seurat integration 建立 linkage
-- 当前 methylation 脚本：RNA 与 methylation 直接使用 matched cells 构造 shared groups
+-   原论文：scATAC 与 scRNA 通过 Seurat integration 建立 linkage
+-   当前 methylation 脚本：RNA 与 methylation 直接使用 matched cells 构造 shared groups
 
 因此，这支脚本应被理解为：
 
-- **在 methylation 数据条件下，尽量贴近 ArchR 原论文 benchmark 结构的实现**
+-   **在 methylation 数据条件下，尽量贴近 ArchR 原论文 benchmark 结构的实现**
 
 而不是：
 
-- 对原论文 scATAC/scRNA integration pipeline 的逐步逐函数复刻
+-   对原论文 scATAC/scRNA integration pipeline 的逐步逐函数复刻
 
 ## 10. `missing = impute1_within_feature` 的实现含义
 
-当前 methylation gene score 的 block 构造发生在 `03_apply_meth_mode.R`。  
+当前 methylation gene score 的 block 构造发生在 `03_apply_meth_mode.R`。\
 其中 `missing = impute1_within_feature` 并不是“把全基因组所有缺失位点都设成 1”，而是：
 
-- 先由模型定义一个 feature / candidate region
-- 只在这个 region 内统计 methylation 位点
-- 对于该 region 内有观测的位点，使用真实 beta 值
-- 对于该 region 内没有观测的位点，按 `1` 补入 gene score 计算
+-   先由模型定义一个 feature / candidate region
+-   只在这个 region 内统计 methylation 位点
+-   对于该 region 内有观测的位点，使用真实 beta 值
+-   对于该 region 内没有观测的位点，按 `1` 补入 gene score 计算
 
 如果把 feature 内所有位点记为 `i = 1, ..., n`，每个位点有权重 `w_i`：
 
-- 已观测位点贡献 `beta_i * w_i`
-- 未观测位点贡献 `1 * w_i`
+-   已观测位点贡献 `beta_i * w_i`
+-   未观测位点贡献 `1 * w_i`
 
 因此 gene score 的本质是：
 
-- “feature 内 methylation 的加权平均值”
-- 但未观测位点被视为 `beta = 1`
+-   “feature 内 methylation 的加权平均值”
+-   但未观测位点被视为 `beta = 1`
 
 在实现上，这等价于：
 
-- `beta_wsum = sum(beta_i * w_i)`，只对已观测位点求和
-- `obs_wsum = sum(w_i)`，只对已观测位点求和
-- `total_wsum = sum(w_i)`，对 feature 内所有候选位点求和
+-   `beta_wsum = sum(beta_i * w_i)`，只对已观测位点求和
+-   `obs_wsum = sum(w_i)`，只对已观测位点求和
+-   `total_wsum = sum(w_i)`，对 feature 内所有候选位点求和
 
 最后输出：
 
-```text
+``` text
 (beta_wsum + (total_wsum - obs_wsum)) / total_wsum
 ```
 
@@ -419,11 +419,11 @@ Supplementary information 描述了两类 matrix 的处理：
 
 ## 11. 为什么它对 gene-body family 的影响往往更大
 
-这类 missing 规则对不同 family 的影响并不均匀。  
+这类 missing 规则对不同 family 的影响并不均匀。\
 在当前 benchmark 结果中，受影响最大的是多种 gene-body based models，尤其是：
 
-- `genebody_exponential_boundary`
-- `genebody_exponential_extend_boundary`
+-   `genebody_exponential_boundary`
+-   `genebody_exponential_extend_boundary`
 
 原因主要有三层。
 
@@ -431,15 +431,15 @@ Supplementary information 描述了两类 matrix 的处理：
 
 gene-body family 往往覆盖：
 
-- gene body 本身
-- 可能的上下游 core-region extension
-- 以及较大的 outer extension（例如到 `100 kb`）
+-   gene body 本身
+-   可能的上下游 core-region extension
+-   以及较大的 outer extension（例如到 `100 kb`）
 
-因此一个 gene-body feature 往往比 promoter/TSS feature 更宽。  
+因此一个 gene-body feature 往往比 promoter/TSS feature 更宽。\
 feature 越大，通常意味着：
 
-- 纳入的 CpG / bins 更多
-- 未观测位点也更多
+-   纳入的 CpG / bins 更多
+-   未观测位点也更多
 
 当未观测位点统一按 `1` 补时，整体分数就更容易被往 `1` 拉高。
 
@@ -447,37 +447,37 @@ feature 越大，通常意味着：
 
 对 promoter window 来说：
 
-- feature 本身更紧凑
+-   feature 本身更紧凑
 
 对 TSS exponential family 来说：
 
-- 尽管 outer range 也可能很大
-- 但距离衰减会让离 TSS 更远的位点权重显著降低
+-   尽管 outer range 也可能很大
+-   但距离衰减会让离 TSS 更远的位点权重显著降低
 
-因此即便远端存在较多缺失位点，它们对总分的影响也相对较小。  
+因此即便远端存在较多缺失位点，它们对总分的影响也相对较小。\
 相比之下，gene-body family 的核心区域本身已经较宽，缺失补 `1` 更容易主导最后的 score。
 
 ### 11.3 在当前 benchmark 中，这会和方向变换及负相关截断叠加
 
 目前表现最差的一些 gene-body models 具有两个共同特征：
 
-- `score_direction = raw`
-- score 数值整体非常接近 `1`
+-   `score_direction = raw`
+-   score 数值整体非常接近 `1`
 
 在这种情况下：
 
-- 它们与 RNA expression 往往呈负相关
-- 而论文式 benchmark 会把负相关和 `NA` 截成 `0`
+-   它们与 RNA expression 往往呈负相关
+-   而论文式 benchmark 会把负相关和 `NA` 截成 `0`
 
 结果就是：
 
-- 很多 gene-body models 在 4 个 tests 中的前三项被大量压成 `0`
-- 只在 `group-level` 相关中保留一个很小的正值
+-   很多 gene-body models 在 4 个 tests 中的前三项被大量压成 `0`
+-   只在 `group-level` 相关中保留一个很小的正值
 
 因此，当前结果里 gene-body family 系统性垫底，并不一定意味着“region design 一定错误”，更可能说明：
 
-- `impute1_within_feature`
-- `raw` 方向
-- 以及 ArchR 论文式 `negative -> 0` 规则
+-   `impute1_within_feature`
+-   `raw` 方向
+-   以及 ArchR 论文式 `negative -> 0` 规则
 
 三者叠加后，会对 gene-body methylation score 产生明显偏置。
