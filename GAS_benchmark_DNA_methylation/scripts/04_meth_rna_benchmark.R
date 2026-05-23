@@ -6,7 +6,7 @@
 # direction-flip benchmark variant performed better in our comparisons.
 #
 # Purpose:
-#   Benchmark methylation-derived gene scores against RNA expression
+#   Benchmark raw methylation-derived gene scores against RNA expression
 #   using an ArchR paper-style comparison design:
 #     1. build shared low-overlap aggregates of 100 cells (target n = 500)
 #     2. aggregate RNA and methylation scores across the same groups
@@ -166,12 +166,6 @@ make_group_mean_matrix <- function(G_bin) {
   G_bin %*% Matrix::Diagonal(x = 1 / gs)
 }
 
-clamp0 <- function(v) {
-  v[is.na(v)] <- 0
-  v[v < 0] <- 0
-  v
-}
-
 row_cor_pearson <- function(X, Y) {
   stopifnot(all(dim(X) == dim(Y)))
   Xc <- X - rowMeans(X, na.rm = TRUE)
@@ -216,9 +210,6 @@ aggregate_block_to_groups <- function(block_file, common_cells, G_bin, score_dir
   avg[nobs == 0] <- NA_real_
   avg <- t(avg)
 
-  if (identical(score_direction, "inhibitory")) {
-    avg <- 1 - avg
-  }
   avg
 }
 
@@ -253,14 +244,14 @@ cor_one_model_archr_paper <- function(mx, genes, matRNA) {
   mx <- mx[genes, , drop = FALSE]
   mz <- matRNA[genes, , drop = FALSE]
 
-  cor_gene <- clamp0(row_cor_pearson(mx, mz))
-  cor_group <- clamp0(col_cor_pearson(mx, mz))
+  cor_gene <- row_cor_pearson(mx, mz)
+  cor_group <- col_cor_pearson(mx, mz)
 
   list(
     gene_cor = cor_gene,
     group_cor = cor_group,
-    gene_median = stats::median(cor_gene),
-    group_median = stats::median(cor_group)
+    gene_median = stats::median(cor_gene, na.rm = TRUE),
+    group_median = stats::median(cor_group, na.rm = TRUE)
   )
 }
 
@@ -277,17 +268,17 @@ family_label_map <- c(
 )
 
 family_color_map <- c(
-  "Promoter" = "#8EA6D9",
+  "Promoter" = "#5A78D6",
   "Signac" = "#C97DBB",
   "SnapATAC" = "#D7B070",
-  "Gene body + exponential + gene boundary" = "#4F7C5D",
-  "Gene body + exponential no gene boundary" = "#7A3E9D",
-  "Gene body extended + exponential + gene boundary" = "#FAE902",
-  "TSS exponential + gene boundary" = "#A8D0E0",
-  "TSS exponential, no gene boundary" = "#98C567",
-  "Co-accessibility" = "#D73027",
-  "Constant gene boundary" = "#2C2C84",
-  "Gene body extended" = "#FD7629"
+  "Gene body + exponential + gene boundary" = "#2FA84F",
+  "Gene body + exponential no gene boundary" = "#6A51B3",
+  "Gene body extended + exponential + gene boundary" = "#FFD321",
+  "TSS exponential + gene boundary" = "#73C6F1",
+  "TSS exponential, no gene boundary" = "#86CF52",
+  "Co-accessibility" = "#E31A1C",
+  "Constant gene boundary" = "#233B8B",
+  "Gene body extended" = "#F39C34"
 )
 
 tests_to_rank <- c(
@@ -297,18 +288,20 @@ tests_to_rank <- c(
   "Pearson_VarGenes_GroupLvl_median"
 )
 
-write_rank_heatmap <- function(rank_df, heatmap_prefix) {
-  plot_df_hm <- rank_df %>%
+write_signed_correlation_heatmap <- function(summary_df, heatmap_prefix) {
+  plot_df_hm <- summary_df %>%
     dplyr::mutate(family_label = dplyr::recode(family, !!!family_label_map, .default = family))
 
-  mat_raw <- as.matrix(plot_df_hm[, paste0("Rank_", tests_to_rank), drop = FALSE])
+  mat_raw <- as.matrix(plot_df_hm[, tests_to_rank, drop = FALSE])
   suppressWarnings(storage.mode(mat_raw) <- "numeric")
-  mean_rank <- rowMeans(mat_raw, na.rm = TRUE)
-  ord <- order(mean_rank, decreasing = FALSE, na.last = TRUE)
+  mean_signed_correlation <- rowMeans(mat_raw, na.rm = TRUE)
+  all_na <- apply(mat_raw, 1, function(x) all(is.na(x)))
+  mean_signed_correlation[all_na] <- Inf
+  ord <- order(mean_signed_correlation, decreasing = FALSE, na.last = TRUE)
   mat <- mat_raw[ord, , drop = FALSE]
   rownames(mat) <- as.character(plot_df_hm$model_id[ord])
   colnames(mat) <- as.character(seq_len(ncol(mat)))
-  display_numbers <- apply(mat, 2, function(x) as.character(as.integer(x)))
+  display_numbers <- apply(mat, 2, function(x) sprintf("%.3f", x))
   rownames(display_numbers) <- rownames(mat)
   ann_df <- data.frame(
     family = plot_df_hm$family_label[ord],
@@ -318,14 +311,37 @@ write_rank_heatmap <- function(rank_df, heatmap_prefix) {
 
   family_levels_hm <- unique(ann_df$family)
   family_palette_hm <- family_color_map[family_levels_hm]
-  pal_hm <- rev(grDevices::colorRampPalette(c("#0B1F3A", "#355C7D", "#A7C5EB", "#F6E58D"))(100))
+  finite_cor <- as.numeric(mat[is.finite(mat)])
+  neg_color_limit <- max(0.05, ceiling(abs(min(finite_cor, na.rm = TRUE)) * 20) / 20)
+  pos_color_limit <- max(0.05, ceiling(max(finite_cor, na.rm = TRUE) * 20) / 20)
+  mat_plot <- -mat
+  mat_plot[mat_plot < -pos_color_limit] <- -pos_color_limit
+  mat_plot[mat_plot > neg_color_limit] <- neg_color_limit
+  n_colors <- 100L
+  n_red <- max(10L, round(n_colors * pos_color_limit / (pos_color_limit + neg_color_limit)))
+  n_blue <- n_colors - n_red
+  pal_hm <- c(
+    grDevices::colorRampPalette(c("#B2182B", "white"))(n_red),
+    grDevices::colorRampPalette(c("white", "#2166AC"))(n_blue)
+  )
+  breaks_hm <- c(
+    seq(-pos_color_limit, 0, length.out = n_red + 1L),
+    seq(0, neg_color_limit, length.out = n_blue + 1L)[-1]
+  )
+  legend_breaks_hm <- c(neg_color_limit, 0, -pos_color_limit)
+  legend_labels_hm <- c(
+    paste0("-", neg_color_limit),
+    "0",
+    paste0(pos_color_limit)
+  )
 
   readr::write_csv(
     tibble::tibble(
       model_id = plot_df_hm$model_id[ord],
       model = plot_df_hm$model[ord],
       family = plot_df_hm$family_label[ord],
-      mean_rank = mean_rank[ord]
+      mean_signed_correlation = mean_signed_correlation[ord],
+      mean_absolute_correlation = rowMeans(abs(mat_raw), na.rm = TRUE)[ord]
     ),
     paste0(heatmap_prefix, "_model_id_map.csv")
   )
@@ -336,8 +352,11 @@ write_rank_heatmap <- function(rank_df, heatmap_prefix) {
 
   plot_heatmap <- function() {
     pheatmap::pheatmap(
-      mat,
+      mat_plot,
       color = pal_hm,
+      breaks = breaks_hm,
+      legend_breaks = legend_breaks_hm,
+      legend_labels = legend_labels_hm,
       border_color = "black",
       cluster_rows = FALSE,
       cluster_cols = FALSE,
@@ -366,25 +385,24 @@ write_violin_plots <- function(dist_df, violin_prefix) {
     plot_df <- dist_df %>%
       dplyr::filter(.data$test_name == !!test_name) %>%
       dplyr::group_by(model, model_id, family_label) %>%
-      dplyr::mutate(cor_median = stats::median(cor)) %>%
+      dplyr::mutate(cor_median = stats::median(cor, na.rm = TRUE)) %>%
       dplyr::ungroup()
 
     order_tbl <- plot_df %>%
       dplyr::group_by(model, model_id) %>%
-      dplyr::summarise(cor_median = stats::median(cor), .groups = "drop") %>%
-      dplyr::arrange(dplyr::desc(cor_median))
+      dplyr::summarise(cor_median = stats::median(cor, na.rm = TRUE), .groups = "drop") %>%
+      dplyr::arrange(cor_median)
 
     plot_df$model_id_plot <- factor(as.character(plot_df$model_id), levels = as.character(order_tbl$model_id))
     family_levels <- unique(plot_df$family_label)
     pal_model <- family_color_map[family_levels]
-    cor_max <- max(order_tbl$cor_median, na.rm = TRUE)
 
     p <- ggplot(plot_df, aes(x = model_id_plot, y = cor, fill = family_label)) +
       geom_violin(alpha = 1, color = "black", linewidth = 0.25, trim = TRUE, scale = "width", width = 0.95) +
       geom_boxplot(outlier.size = 0, outlier.stroke = 0, fill = NA, color = "black", linewidth = 0.25, width = 0.22) +
       scale_fill_manual(values = pal_model) +
       ylab("Correlation") + xlab(NULL) + ggtitle(title_text) +
-      geom_hline(yintercept = cor_max, lty = "dashed", linewidth = 0.4) +
+      geom_hline(yintercept = 0, lty = "dashed", linewidth = 0.4, color = "grey35") +
       theme_bw(base_size = 10) +
       theme(
         legend.position = "none",
@@ -394,7 +412,7 @@ write_violin_plots <- function(dist_df, violin_prefix) {
         axis.title.y = element_text(size = 11),
         plot.margin = margin(6, 8, 6, 6)
       ) +
-      coord_cartesian(ylim = c(0, 1))
+      coord_cartesian(ylim = c(-1, 1))
 
     grDevices::pdf(paste0(violin_prefix, "_", suffix, ".pdf"), width = 16, height = 3.8, useDingbats = FALSE)
     print(p)
@@ -433,7 +451,7 @@ test_map_csv <- file.path(results_dir, "test_id_map.csv")
 dist_csv <- file.path(results_dir, "correlation_distributions.csv")
 figure_dir <- file.path(results_dir, "figures")
 dir.create(figure_dir, recursive = TRUE, showWarnings = FALSE)
-heatmap_prefix <- file.path(figure_dir, "rank_heatmap")
+heatmap_prefix <- file.path(figure_dir, "signed_median_correlation_heatmap")
 violin_prefix <- file.path(figure_dir, "methylation_correlation_violin")
 
 stopifnot(file.exists(rna_counts_path))
@@ -646,7 +664,7 @@ check_df <- summary_df %>%
   dplyr::left_join(
     dist_df %>%
       dplyr::group_by(model, test_name) %>%
-      dplyr::summarise(med = stats::median(cor), .groups = "drop") %>%
+      dplyr::summarise(med = stats::median(cor, na.rm = TRUE), .groups = "drop") %>%
       tidyr::pivot_wider(names_from = test_name, values_from = med),
     by = "model",
     suffix = c("_summary", "_dist")
@@ -661,7 +679,7 @@ if (!is.finite(max_diff) || max_diff > 1e-10) {
   stop("Distribution median mismatch after strict rerun. Max abs gap = ", signif(max_diff, 6))
 }
 
-write_rank_heatmap(rank_df = rank_df, heatmap_prefix = heatmap_prefix)
+write_signed_correlation_heatmap(summary_df = summary_df, heatmap_prefix = heatmap_prefix)
 write_violin_plots(dist_df = dist_df, violin_prefix = violin_prefix)
 
 log_info("")

@@ -57,25 +57,6 @@ save_session_info <- function(out = file.path(paths$project$env, "sessionInfo.tx
 }
 
 # -----------------------------
-# Package loading
-# -----------------------------
-load_or_install <- function(pkg) {
-  if (!requireNamespace(pkg, quietly = TRUE)) {
-    install.packages(pkg)
-  }
-  suppressPackageStartupMessages(
-    library(pkg, character.only = TRUE)
-  )
-}
-
-pkgs <- c(
-  "data.table", "Matrix", "GenomicRanges", "IRanges",
-  "yaml", "R.utils", "arrow", "ggplot2"
-)
-
-invisible(lapply(pkgs, load_or_install))
-
-# -----------------------------
 # Startup summary
 # -----------------------------
 msg("Setup loaded.")

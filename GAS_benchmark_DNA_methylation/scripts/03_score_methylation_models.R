@@ -11,7 +11,6 @@ chr_arg <- sub("^--chrs=", "", args[grepl("^--chrs=", args)])
 model_arg <- sub("^--models=", "", args[grepl("^--models=", args)])
 block_arg <- sub("^--blocks=", "", args[grepl("^--blocks=", args)])
 worker_arg <- sub("^--workers=", "", args[grepl("^--workers=", args)])
-models_manifest_arg <- sub("^--models-manifest=", "", args[grepl("^--models-manifest=", args)])
 out_root_name_arg <- sub("^--out-root-name=", "", args[grepl("^--out-root-name=", args)])
 
 parse_int_arg <- function(x) {
@@ -77,10 +76,9 @@ total_path_chr <- function(chr) file.path(paths$upstream$cg_dir, sprintf("total_
 GTF_PATH <- "/storage2/Data/Luo2022/gencode.v28lift37.annotation.gtf.gz"
 
 models_manifest <- file.path(paths$project$root, "models", "models_manifest.csv")
-if (length(models_manifest_arg) > 0 && nzchar(models_manifest_arg[1])) {
-  models_manifest <- models_manifest_arg[1]
+if (!file.exists(models_manifest)) {
+  stop("Missing models manifest: ", models_manifest)
 }
-stopifnot(file.exists(models_manifest))
 
 models_df <- readr::read_csv(models_manifest, show_col_types = FALSE)
 if ("model_id" %in% colnames(models_df)) {
@@ -122,6 +120,8 @@ sanitize_gene_id <- function(x) {
 }
 
 anno_out <- file.path(paths$methylation$processed, "reference", "gencode_v28lift37_gene_df_chr1_22.rds")
+
+# Construct_gene_boundaries
 compute_gene_boundaries_by_tss <- function(df_chr) {
   stopifnot(all(df_chr$chr == df_chr$chr[1]))
   df_chr <- df_chr %>% arrange(tss)
@@ -229,62 +229,14 @@ log_info("[gene-anno] genes retained for selected chromosomes: ", nrow(gene_df))
 
 # Model validation: expect model object loaded from .rds
 validate_model <- function(model) {
-  need <- c(
-    "name",
-    "anchor_type",
-    "gene_model",
-    "use_gene_boundaries",
-    "missing"
-  )
+  need <- c("name", "anchor_type", "gene_model", "use_gene_boundaries", "missing")
   miss <- setdiff(need, names(model))
   if (length(miss) > 0) stop("Model missing fields: ", paste(miss, collapse = ", "))
-  
-  if (!model$anchor_type %in% c("tss", "gene_body")) {
-    stop("model ", model$name, " invalid anchor_type: ", model$anchor_type)
+  if (!model$anchor_type %in% c("tss", "gene_body") ||
+      !model$missing %in% c("impute1_within_feature", "drop_missing", "observed_only") ||
+      is.null(model$gene_model) || is.na(model$gene_model) || !nzchar(model$gene_model)) {
+    stop("Invalid model definition: ", model$name %||% "<unnamed>")
   }
-  if (is.null(model$gene_model) || is.na(model$gene_model) || !nzchar(model$gene_model)) {
-    stop("model ", model$name, " requires gene_model")
-  }
-  if (!model$missing %in% c("impute1_within_feature","drop_missing","observed_only")) {
-    stop("model ", model$name, " invalid missing: ", model$missing)
-  }
-  
-  if (!is.null(model$promoter_window_bp) && !is.na(model$promoter_window_bp)) {
-    if (!identical(model$anchor_type, "tss")) {
-      stop("model ", model$name, " promoter_window_bp requires anchor_type = 'tss'")
-    }
-  } else {
-    if (is.null(model$core_region_up_bp) || is.null(model$core_region_down_bp) ||
-        is.na(model$core_region_up_bp) || is.na(model$core_region_down_bp)) {
-      stop("model ", model$name, " requires core_region_up_bp and core_region_down_bp")
-    }
-  }
-
-  if (!is.logical(model$use_gene_boundaries) || length(model$use_gene_boundaries) != 1L || is.na(model$use_gene_boundaries)) {
-    stop("model ", model$name, " use_gene_boundaries must be single TRUE/FALSE")
-  }
-
-  if (isTRUE(model$use_gene_boundaries) || grepl("^exp\\(", model$gene_model)) {
-    req_ext <- c(
-      "extend_upstream_min_bp",
-      "extend_upstream_max_bp",
-      "extend_downstream_min_bp",
-      "extend_downstream_max_bp"
-    )
-    miss_ext <- req_ext[vapply(req_ext, function(nm) {
-      is.null(model[[nm]]) || is.na(model[[nm]])
-    }, logical(1))]
-    if (length(miss_ext) > 0) {
-      stop("model ", model$name, " missing extension fields: ", paste(miss_ext, collapse = ", "))
-    }
-  }
-
-  if ("score_direction" %in% names(model)) {
-    if (!model$score_direction %in% c("inhibitory", "raw")) {
-      stop("model ", model$name, " invalid score_direction: ", model$score_direction)
-    }
-  }
-  
   invisible(TRUE)
 }
 
@@ -304,7 +256,7 @@ parse_gene_model <- function(model) {
 }
 
 # ============================================================
-# Build core and candidate windows
+# Build genomic window for every gene
 # ============================================================
 build_gene_windows <- function(gene_df, model) {
   if (!is.null(model$promoter_window_bp) && !is.na(model$promoter_window_bp)) {
